@@ -1,4 +1,3 @@
-
 import asyncio
 import random
 import re
@@ -228,8 +227,188 @@ class GiveawayView(discord.ui.View):
 
 
 # =========================================================
+# GIVEAWAY STOP
+# =========================================================
+
+class StopGiveawayView(discord.ui.View):
+    def __init__(self, cog, options):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.select.options = options
+
+    @discord.ui.select(
+        placeholder="中止する抽選を選択",
+        custom_id="giveaway_stop_select"
+    )
+    async def select(self, interaction, select):
+        message_id = int(select.values[0])
+        view = self.cog.active_giveaways.get(message_id)
+
+        if not view:
+            await interaction.response.edit_message(
+                content="抽選が見つかりません。既に終了している可能性があります。",
+                view=None
+            )
+            return
+
+        if interaction.guild_id != view.message.guild.id:
+            await interaction.response.edit_message(
+                content="このサーバーの抽選ではありません。",
+                view=None
+            )
+            return
+
+        view.cancelled = True
+        view.stop()
+
+        task = self.cog.giveaway_tasks.get(message_id)
+        if task:
+            task.cancel()
+
+        await view.refresh()
+        self.cog.active_giveaways.pop(message_id, None)
+        self.cog.giveaway_tasks.pop(message_id, None)
+
+        await interaction.response.edit_message(
+            content=f"抽選「{view.prize}」を中止しました。",
+            view=None
+        )
+
+
+# =========================================================
 # VOUCH PANEL
 # =========================================================
+
+class VouchRatingView(discord.ui.View):
+    def __init__(self, cog, panel_id, user_id, content):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.user_id = user_id
+        self.content = content
+
+    async def send_review(self, interaction, stars):
+        panel = self.cog.vouch_panels.get(self.panel_id)
+
+        if not panel or not interaction.guild:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        destination = interaction.guild.get_channel(panel["destination_id"])
+
+        if not isinstance(destination, discord.TextChannel):
+            await interaction.response.send_message(
+                "実績送信先チャンネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        # 画像2枚目のような埋め込みを作成
+        embed = discord.Embed(
+            title="🛒 実績レビュー",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        embed.add_field(
+            name="購入者",
+            value=interaction.user.mention,
+            inline=True
+        )
+        embed.add_field(
+            name="商品",
+            value=panel["title"],
+            inline=True
+        )
+        embed.add_field(
+            name="評価",
+            value=f"{'⭐' * stars} `{stars}/5`",
+            inline=False
+        )
+        embed.add_field(
+            name="レビュー",
+            value=self.content,
+            inline=False
+        )
+
+        embed.set_footer(
+            text=f"Review by {interaction.user.display_name} / ID: {interaction.user.id}"
+        )
+
+        try:
+            await destination.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "Botに送信先への閲覧・送信権限がありません。",
+                ephemeral=True
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "実績を送信できませんでした。",
+                ephemeral=True
+            )
+            return
+
+        panel["count"] += 1
+
+        counter_id = panel.get("counter_id")
+        if counter_id:
+            counter = interaction.guild.get_channel(counter_id)
+
+            if isinstance(counter, discord.TextChannel):
+                name = f"{panel['counter_base_name']} -{panel['count']}"[:100]
+                try:
+                    await counter.edit(
+                        name=name,
+                        reason="実績カウント更新"
+                    )
+                except discord.HTTPException:
+                    pass
+
+        await interaction.response.edit_message(
+            content="✅ 実績を送信しました。",
+            view=None
+        )
+
+    @discord.ui.button(label="⭐", style=discord.ButtonStyle.secondary)
+    async def star1(self, interaction, button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("あなたのレビューではありません。", ephemeral=True)
+            return
+        await self.send_review(interaction, 1)
+
+    @discord.ui.button(label="⭐⭐", style=discord.ButtonStyle.secondary)
+    async def star2(self, interaction, button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("あなたのレビューではありません。", ephemeral=True)
+            return
+        await self.send_review(interaction, 2)
+
+    @discord.ui.button(label="⭐⭐⭐", style=discord.ButtonStyle.secondary)
+    async def star3(self, interaction, button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("あなたのレビューではありません。", ephemeral=True)
+            return
+        await self.send_review(interaction, 3)
+
+    @discord.ui.button(label="⭐⭐⭐⭐", style=discord.ButtonStyle.secondary)
+    async def star4(self, interaction, button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("あなたのレビューではありません。", ephemeral=True)
+            return
+        await self.send_review(interaction, 4)
+
+    @discord.ui.button(label="⭐⭐⭐⭐⭐", style=discord.ButtonStyle.secondary)
+    async def star5(self, interaction, button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("あなたのレビューではありません。", ephemeral=True)
+            return
+        await self.send_review(interaction, 5)
+
 
 class VouchModal(discord.ui.Modal):
     def __init__(self, cog, panel_id):
@@ -265,51 +444,18 @@ class VouchModal(discord.ui.Modal):
             )
             return
 
-        embed = discord.Embed(
-            title=panel["title"],
-            description=self.content.value,
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow()
+        # 評価選択ビューを表示
+        view = VouchRatingView(
+            self.cog,
+            self.panel_id,
+            interaction.user.id,
+            self.content.value
         )
-        embed.add_field(
-            name="送信者",
-            value=interaction.user.mention,
-            inline=False
-        )
-
-        try:
-            await destination.send(embed=embed)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "Botに送信先への閲覧・送信権限がありません。",
-                ephemeral=True
-            )
-            return
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "実績を送信できませんでした。",
-                ephemeral=True
-            )
-            return
-
-        panel["count"] += 1
-
-        counter_id = panel.get("counter_id")
-        if counter_id:
-            counter = interaction.guild.get_channel(counter_id)
-
-            if isinstance(counter, discord.TextChannel):
-                name = f"{panel['counter_base_name']} -{panel['count']}"[:100]
-                try:
-                    await counter.edit(
-                        name=name,
-                        reason="実績カウント更新"
-                    )
-                except discord.HTTPException:
-                    pass
 
         await interaction.response.send_message(
-            "✅ 実績を送信しました。",
+            "レビュー内容を受け取りました。\n"
+            f"**{panel['title']}** の評価を選んでください。",
+            view=view,
             ephemeral=True
         )
 
@@ -344,16 +490,11 @@ def status_embed(panel):
     }
 
     embed = discord.Embed(
-        title=panel["title"],
+        title="対応状況",
         description=panel["description"],
         color=colors[panel["status"]]
     )
 
-    embed.add_field(
-        name="作成者",
-        value=f"# {panel['creator_mention']}",
-        inline=False
-    )
     embed.add_field(
         name="現在の状態",
         value=f"{panel['emoji']} **{panel['status']}**",
@@ -615,49 +756,41 @@ class SlashCog(commands.Cog):
 
     @app_commands.command(
         name="giveaway-stop",
-        description="進行中の抽選を中止します"
+        description="進行中の抽選を選択して中止します"
     )
-    @app_commands.describe(message_id="抽選メッセージのID")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def giveaway_stop(self, interaction, message_id: str):
-        try:
-            giveaway_id = int(message_id)
-        except ValueError:
-            await interaction.response.send_message(
-                "メッセージIDを数字で指定してください。",
-                ephemeral=True
-            )
-            return
+    async def giveaway_stop(self, interaction):
+        # このサーバーで進行中のGiveawayだけを抽出
+        guild_giveaways = {
+            mid: view for mid, view in self.active_giveaways.items()
+            if view.message and view.message.guild
+            and view.message.guild.id == interaction.guild_id
+            and not view.ended and not view.cancelled
+        }
 
-        view = self.active_giveaways.get(giveaway_id)
-
-        if not view:
+        if not guild_giveaways:
             await interaction.response.send_message(
                 "進行中の抽選が見つかりません。",
                 ephemeral=True
             )
             return
 
-        if interaction.guild_id != view.message.guild.id:
-            await interaction.response.send_message(
-                "このサーバーの抽選ではありません。",
-                ephemeral=True
+        # セレクトメニューの選択肢を作成（最大25個まで）
+        options = []
+        for mid, view in list(guild_giveaways.items())[:25]:
+            options.append(
+                discord.SelectOption(
+                    label=f"{view.prize[:50]}",
+                    description=f"ID: {mid} / 参加者: {len(view.participants)}人",
+                    value=str(mid)
+                )
             )
-            return
 
-        view.cancelled = True
-        view.stop()
-
-        task = self.giveaway_tasks.get(giveaway_id)
-        if task:
-            task.cancel()
-
-        await view.refresh()
-        self.active_giveaways.pop(giveaway_id, None)
-        self.giveaway_tasks.pop(giveaway_id, None)
+        view = StopGiveawayView(self, options)
 
         await interaction.response.send_message(
-            "抽選を中止しました。",
+            "中止する抽選を選択してください。",
+            view=view,
             ephemeral=True
         )
 
@@ -727,7 +860,7 @@ class SlashCog(commands.Cog):
     )
     @app_commands.describe(
         destination="実績を送信するチャンネル",
-        title="パネルタイトル",
+        title="パネルタイトル（商品名として使用）",
         description="パネル説明",
         counter_channel="任意：実績数を表示するチャンネル"
     )
@@ -777,7 +910,6 @@ class SlashCog(commands.Cog):
         description="対応状況パネルを作成します"
     )
     @app_commands.describe(
-        title="パネルタイトル",
         description="パネル説明",
         status="最初の対応状況",
         message="一言"
@@ -792,7 +924,6 @@ class SlashCog(commands.Cog):
     async def status(
         self,
         interaction,
-        title: str = "対応状況",
         description: str = "現在の対応状況です。",
         status: app_commands.Choice[str] = None,
         message: str = ""
@@ -816,8 +947,7 @@ class SlashCog(commands.Cog):
         panel = {
             "id": panel_id,
             "creator_id": interaction.user.id,
-            "creator_mention": interaction.user.mention,
-            "title": title,
+            "title": "対応状況",
             "description": description,
             "status": selected_status,
             "emoji": emojis[selected_status],
