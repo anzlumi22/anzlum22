@@ -12,21 +12,93 @@ from discord.ext import commands
 
 
 # =========================================================
-# 権限チェック（許可ユーザーリスト）
+# 権限チェック（許可ユーザーリスト：ユーザーID × サーバーID）
 # =========================================================
 
 VENDING_DATA_FILE = "vending_data.json"
 
 
-def load_allowed_users():
-    if os.path.exists(VENDING_DATA_FILE):
+def load_allowed_entries():
+    if not os.path.exists(VENDING_DATA_FILE):
+        return []
+
+    try:
         with open(VENDING_DATA_FILE, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-                return data.get("allowed_user_ids", [])
-            except json.JSONDecodeError:
-                return []
-    return []
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    entries = []
+
+    for entry in data.get("allowed_entries", []):
+        try:
+            entries.append({
+                "user_id": int(entry["user_id"]),
+                "guild_id": int(entry["guild_id"])
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    for uid in data.get("allowed_user_ids", []):
+        try:
+            entries.append({
+                "user_id": int(uid),
+                "guild_id": None
+            })
+        except (TypeError, ValueError):
+            continue
+
+    return entries
+
+
+def save_allowed_entries(entries):
+    with open(VENDING_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {"allowed_entries": entries},
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+
+def add_allowed_entry(user_id: int, guild_id: int) -> bool:
+    entries = load_allowed_entries()
+
+    for e in entries:
+        if e["user_id"] == user_id and e["guild_id"] == guild_id:
+            return False
+
+    entries.append({"user_id": user_id, "guild_id": guild_id})
+    save_allowed_entries(entries)
+    return True
+
+
+def remove_allowed_entry(user_id: int, guild_id: int) -> bool:
+    entries = load_allowed_entries()
+    new_entries = [
+        e for e in entries
+        if not (e["user_id"] == user_id and e["guild_id"] == guild_id)
+    ]
+
+    if len(new_entries) == len(entries):
+        return False
+
+    save_allowed_entries(new_entries)
+    return True
+
+
+def is_allowed_now(user_id: int, guild_id):
+    for e in load_allowed_entries():
+        if e["user_id"] != user_id:
+            continue
+
+        if e["guild_id"] is None:
+            return True
+
+        if guild_id is not None and e["guild_id"] == guild_id:
+            return True
+
+    return False
 
 
 def is_allowed():
@@ -34,8 +106,7 @@ def is_allowed():
         if await interaction.client.is_owner(interaction.user):
             return True
 
-        allowed_ids = load_allowed_users()
-        if interaction.user.id not in allowed_ids:
+        if not is_allowed_now(interaction.user.id, interaction.guild_id):
             await interaction.response.send_message(
                 "🚫 あなたはこのBotの機能を利用する権限がありません。",
                 ephemeral=True
@@ -330,16 +401,13 @@ class StartGiveawayView(discord.ui.View):
             )
             return
 
-        # 開始処理
         view.started = True
         view.end_time = int(time.time() + seconds)
         await view.refresh()
 
-        # pending から active へ移動
         self.cog.pending_giveaways.pop(message_id, None)
         self.cog.active_giveaways[message_id] = view
 
-        # 終了タスクを起動
         async def finish():
             try:
                 await asyncio.sleep(seconds)
@@ -437,16 +505,207 @@ class StopGiveawayView(discord.ui.View):
 
 
 # =========================================================
+# TICKET
+# =========================================================
+
+class TicketCloseView(discord.ui.View):
+    def __init__(self, cog, panel_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.close_button.custom_id = f"ticket_close_{panel_id}"
+
+    @discord.ui.button(
+        label="🔒 チケットを閉じる",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_close_default"
+    )
+    async def close_button(self, interaction, button):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        # 削除権限チェック
+        if panel["delete_permission"] == "admin":
+            if not interaction.user.guild_permissions.manage_channels:
+                await interaction.response.send_message(
+                    "このチケットを削除するにはチャンネル管理権限が必要です。",
+                    ephemeral=True
+                )
+                return
+
+        await interaction.response.send_message(
+            "チケットを削除します...",
+            ephemeral=True
+        )
+
+        channel = interaction.channel
+
+        # アーカイブログ送信
+        archive_id = panel.get("archive_channel_id")
+        if archive_id:
+            archive = interaction.guild.get_channel(archive_id)
+            if isinstance(archive, discord.TextChannel):
+                embed = discord.Embed(
+                    title="📦 チケット削除ログ",
+                    description=f"チャンネル: `{channel.name}`",
+                    color=discord.Color.dark_grey(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.add_field(
+                    name="削除者",
+                    value=interaction.user.mention,
+                    inline=False
+                )
+                try:
+                    await archive.send(embed=embed)
+                except discord.HTTPException:
+                    pass
+
+        try:
+            await channel.delete(
+                reason=f"Ticket closed by {interaction.user}"
+            )
+        except discord.HTTPException:
+            pass
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self, cog, panel_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.create_button.custom_id = f"ticket_create_{panel_id}"
+
+    @discord.ui.button(
+        label="🎫 チケットを作成",
+        style=discord.ButtonStyle.success,
+        custom_id="ticket_create_default"
+    )
+    async def create_button(self, interaction, button):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel or not interaction.guild:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        # 作成数チェック
+        user_tickets = [
+            ch for ch in interaction.guild.channels
+            if isinstance(ch, discord.TextChannel)
+            and ch.topic == f"ticket_owner:{interaction.user.id}:panel:{self.panel_id}"
+        ]
+        if len(user_tickets) >= panel["max_tickets"]:
+            await interaction.response.send_message(
+                f"あなたは既に {panel['max_tickets']} 件のチケットを作成しています。",
+                ephemeral=True
+            )
+            return
+
+        category = interaction.guild.get_channel(panel["category_id"])
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.response.send_message(
+                "カテゴリーが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # チャンネル名
+        channel_name = f"ticket-{interaction.user.name}"[:100]
+
+        # 権限設定
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            ),
+            interaction.guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True
+            )
+        }
+
+        mention_role_id = panel.get("mention_role_id")
+        if mention_role_id:
+            role = interaction.guild.get_role(mention_role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                )
+
+        try:
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=f"ticket_owner:{interaction.user.id}:panel:{self.panel_id}"
+            )
+        except discord.HTTPException as error:
+            await interaction.followup.send(
+                f"チケットの作成に失敗しました: {error}",
+                ephemeral=True
+            )
+            return
+
+        # 埋め込み作成
+        embed = discord.Embed(
+            title=panel.get("embed_title") or "チケット",
+            description=panel.get("embed_description") or "サポートします。",
+            color=discord.Color.blurple()
+        )
+        if panel.get("embed_image"):
+            embed.set_image(url=panel["embed_image"])
+
+        # メンション
+        mention_text = interaction.user.mention
+        if mention_role_id:
+            role = interaction.guild.get_role(mention_role_id)
+            if role:
+                mention_text += f" {role.mention}"
+
+        welcome = panel.get("welcome_message") or "チケットを作成しました。"
+
+        await channel.send(
+            content=f"{mention_text}\n{welcome}",
+            embed=embed,
+            view=TicketCloseView(self.cog, self.panel_id)
+        )
+
+        await interaction.followup.send(
+            f"チケットを作成しました: {channel.mention}",
+            ephemeral=True
+        )
+
+
+# =========================================================
 # VOUCH PANEL
 # =========================================================
 
 class VouchRatingView(discord.ui.View):
-    def __init__(self, cog, panel_id, user_id, content):
+    def __init__(self, cog, panel_id, user_id, product_name, quantity, impression):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
         self.user_id = user_id
-        self.content = content
+        self.product_name = product_name
+        self.quantity = quantity
+        self.impression = impression
 
     async def send_review(self, interaction, stars):
         panel = self.cog.vouch_panels.get(self.panel_id)
@@ -480,7 +739,12 @@ class VouchRatingView(discord.ui.View):
         )
         embed.add_field(
             name="商品",
-            value=panel["title"],
+            value=self.product_name,
+            inline=True
+        )
+        embed.add_field(
+            name="個数",
+            value=str(self.quantity),
             inline=True
         )
         embed.add_field(
@@ -489,8 +753,8 @@ class VouchRatingView(discord.ui.View):
             inline=False
         )
         embed.add_field(
-            name="レビュー",
-            value=self.content,
+            name="感想",
+            value=self.impression,
             inline=False
         )
 
@@ -576,14 +840,29 @@ class VouchModal(discord.ui.Modal):
         self.cog = cog
         self.panel_id = panel_id
 
-        self.content = discord.ui.TextInput(
-            label="実績内容",
-            placeholder="実績の内容を入力してください",
+        self.product_name = discord.ui.TextInput(
+            label="商品名",
+            placeholder="購入した商品名",
+            max_length=100,
+            required=True
+        )
+        self.quantity = discord.ui.TextInput(
+            label="個数",
+            placeholder="数字のみ",
+            max_length=10,
+            required=True
+        )
+        self.impression = discord.ui.TextInput(
+            label="感想",
+            placeholder="感想を入力",
             style=discord.TextStyle.paragraph,
             max_length=1000,
             required=True
         )
-        self.add_item(self.content)
+
+        self.add_item(self.product_name)
+        self.add_item(self.quantity)
+        self.add_item(self.impression)
 
     async def on_submit(self, interaction):
         panel = self.cog.vouch_panels.get(self.panel_id)
@@ -595,11 +874,10 @@ class VouchModal(discord.ui.Modal):
             )
             return
 
-        destination = interaction.guild.get_channel(panel["destination_id"])
-
-        if not isinstance(destination, discord.TextChannel):
+        # 個数のバリデーション
+        if not self.quantity.value.isdigit():
             await interaction.response.send_message(
-                "実績送信先チャンネルが見つかりません。",
+                "個数は数字のみで入力してください。",
                 ephemeral=True
             )
             return
@@ -608,12 +886,14 @@ class VouchModal(discord.ui.Modal):
             self.cog,
             self.panel_id,
             interaction.user.id,
-            self.content.value
+            self.product_name.value,
+            int(self.quantity.value),
+            self.impression.value
         )
 
         await interaction.response.send_message(
             "レビュー内容を受け取りました。\n"
-            f"**{panel['title']}** の評価を選んでください。",
+            f"**{self.product_name.value}** の評価を選んでください。",
             view=view,
             ephemeral=True
         )
@@ -775,6 +1055,151 @@ class StatusView(discord.ui.View):
 
 
 # =========================================================
+# TICKET EDIT
+# =========================================================
+
+class TicketEditSelectView(discord.ui.View):
+    def __init__(self, cog, options):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.select.options = options
+
+    @discord.ui.select(
+        placeholder="編集するチケットパネルを選択",
+        custom_id="ticket_edit_select"
+    )
+    async def select(self, interaction, select):
+        panel_id = select.values[0]
+        panel = self.cog.ticket_panels.get(panel_id)
+
+        if not panel:
+            await interaction.response.edit_message(
+                content="パネルが見つかりません。",
+                view=None
+            )
+            return
+
+        view = TicketEditMenuView(self.cog, panel_id)
+        await interaction.response.edit_message(
+            content=f"パネル `{panel_id}` の編集メニューです。",
+            view=view
+        )
+
+
+class TicketEditMenuView(discord.ui.View):
+    def __init__(self, cog, panel_id):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.field_select.options = [
+            discord.SelectOption(label="ボタン名", value="button_label"),
+            discord.SelectOption(label="最大チケット数", value="max_tickets"),
+            discord.SelectOption(label="メンションロール", value="mention_role"),
+            discord.SelectOption(label="埋め込みタイトル", value="embed_title"),
+            discord.SelectOption(label="埋め込み説明", value="embed_description"),
+            discord.SelectOption(label="埋め込み画像", value="embed_image"),
+            discord.SelectOption(label="ウェルカムメッセージ", value="welcome_message"),
+            discord.SelectOption(label="削除権限", value="delete_permission"),
+            discord.SelectOption(label="カテゴリー", value="category"),
+            discord.SelectOption(label="アーカイブチャンネル", value="archive_channel"),
+        ]
+
+    @discord.ui.select(
+        placeholder="編集する項目を選択",
+        options=[],
+        custom_id="ticket_edit_field"
+    )
+    async def field_select(self, interaction, select):
+        field = select.values[0]
+        await interaction.response.send_modal(
+            TicketEditModal(self.cog, self.panel_id, field)
+        )
+
+
+class TicketEditModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id, field):
+        super().__init__(title=f"編集: {field}")
+        self.cog = cog
+        self.panel_id = panel_id
+        self.field = field
+
+        self.value_input = discord.ui.TextInput(
+            label="新しい値",
+            placeholder="新しい値を入力してください",
+            required=False,
+            max_length=1000
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        value = self.value_input.value.strip()
+        field = self.field
+
+        try:
+            if field == "button_label":
+                panel["button_label"] = value or panel["button_label"]
+            elif field == "max_tickets":
+                panel["max_tickets"] = int(value) if value else panel["max_tickets"]
+            elif field == "mention_role":
+                if value:
+                    panel["mention_role_id"] = int(value)
+                else:
+                    panel["mention_role_id"] = None
+            elif field == "embed_title":
+                panel["embed_title"] = value
+            elif field == "embed_description":
+                panel["embed_description"] = value
+            elif field == "embed_image":
+                panel["embed_image"] = value
+            elif field == "welcome_message":
+                panel["welcome_message"] = value
+            elif field == "delete_permission":
+                if value in ("admin", "everyone"):
+                    panel["delete_permission"] = value
+                else:
+                    raise ValueError("admin または everyone を指定してください。")
+            elif field == "category":
+                if value:
+                    panel["category_id"] = int(value)
+            elif field == "archive_channel":
+                if value:
+                    panel["archive_channel_id"] = int(value)
+                else:
+                    panel["archive_channel_id"] = None
+        except ValueError as error:
+            await interaction.response.send_message(
+                f"値が不正です: {error}",
+                ephemeral=True
+            )
+            return
+
+        # パネルメッセージのボタン名を更新
+        try:
+            channel = interaction.guild.get_channel(panel["channel_id"])
+            if isinstance(channel, discord.TextChannel):
+                message = await channel.fetch_message(panel["message_id"])
+                # ボタン名を更新するためにビューを再生成
+                new_view = TicketPanelView(self.cog, self.panel_id)
+                new_view.create_button.label = panel["button_label"]
+                await message.edit(view=new_view)
+        except (discord.HTTPException, AttributeError):
+            pass
+
+        await interaction.response.send_message(
+            f"`{field}` を更新しました。",
+            ephemeral=True
+        )
+
+
+# =========================================================
 # MAIN COG
 # =========================================================
 
@@ -786,6 +1211,7 @@ class SlashCog(commands.Cog):
         self.giveaway_tasks = {}
         self.vouch_panels = {}
         self.status_panels = {}
+        self.ticket_panels = {}
 
     async def refresh_status(self, panel):
         channel = self.bot.get_channel(panel["channel_id"])
@@ -797,6 +1223,159 @@ class SlashCog(commands.Cog):
             await message.edit(embed=status_embed(panel))
         except discord.HTTPException:
             pass
+
+    # -----------------------------------------------------
+    # /allow-add
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="allow-add",
+        description="許可ユーザーをサーバー単位で追加します（Botオーナー専用）"
+    )
+    @app_commands.describe(
+        user="許可するユーザー",
+        guild_id="許可するサーバーID（このサーバーで使うなら省略可）"
+    )
+    async def allow_add(
+        self,
+        interaction,
+        user: discord.User,
+        guild_id: str = None
+    ):
+        if not await interaction.client.is_owner(interaction.user):
+            await interaction.response.send_message(
+                "このコマンドはBotオーナーのみ使用できます。",
+                ephemeral=True
+            )
+            return
+
+        if guild_id is None:
+            if interaction.guild_id is None:
+                await interaction.response.send_message(
+                    "サーバー外から実行する場合は guild_id を指定してください。",
+                    ephemeral=True
+                )
+                return
+            target_guild_id = interaction.guild_id
+        else:
+            try:
+                target_guild_id = int(guild_id)
+            except ValueError:
+                await interaction.response.send_message(
+                    "guild_id は数字で指定してください。",
+                    ephemeral=True
+                )
+                return
+
+        added = add_allowed_entry(user.id, target_guild_id)
+
+        if added:
+            await interaction.response.send_message(
+                f"✅ {user.mention} をサーバーID `{target_guild_id}` の許可リストに追加しました。",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"ℹ️ {user.mention} は既にサーバーID `{target_guild_id}` の許可リストに存在します。",
+                ephemeral=True
+            )
+
+    # -----------------------------------------------------
+    # /allow-remove
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="allow-remove",
+        description="許可ユーザーをサーバー単位で削除します（Botオーナー専用）"
+    )
+    @app_commands.describe(
+        user="削除するユーザー",
+        guild_id="削除するサーバーID（このサーバーなら省略可）"
+    )
+    async def allow_remove(
+        self,
+        interaction,
+        user: discord.User,
+        guild_id: str = None
+    ):
+        if not await interaction.client.is_owner(interaction.user):
+            await interaction.response.send_message(
+                "このコマンドはBotオーナーのみ使用できます。",
+                ephemeral=True
+            )
+            return
+
+        if guild_id is None:
+            if interaction.guild_id is None:
+                await interaction.response.send_message(
+                    "サーバー外から実行する場合は guild_id を指定してください。",
+                    ephemeral=True
+                )
+                return
+            target_guild_id = interaction.guild_id
+        else:
+            try:
+                target_guild_id = int(guild_id)
+            except ValueError:
+                await interaction.response.send_message(
+                    "guild_id は数字で指定してください。",
+                    ephemeral=True
+                )
+                return
+
+        removed = remove_allowed_entry(user.id, target_guild_id)
+
+        if removed:
+            await interaction.response.send_message(
+                f"🗑️ {user.mention} をサーバーID `{target_guild_id}` の許可リストから削除しました。",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"ℹ️ {user.mention} はサーバーID `{target_guild_id}` の許可リストに存在しません。",
+                ephemeral=True
+            )
+
+    # -----------------------------------------------------
+    # /allow-list
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="allow-list",
+        description="許可リストを表示します（Botオーナー専用）"
+    )
+    async def allow_list(self, interaction):
+        if not await interaction.client.is_owner(interaction.user):
+            await interaction.response.send_message(
+                "このコマンドはBotオーナーのみ使用できます。",
+                ephemeral=True
+            )
+            return
+
+        entries = load_allowed_entries()
+
+        if not entries:
+            await interaction.response.send_message(
+                "許可リストは空です。",
+                ephemeral=True
+            )
+            return
+
+        lines = []
+        for e in entries[:50]:
+            gid = e["guild_id"] if e["guild_id"] is not None else "全サーバー"
+            lines.append(f"• <@{e['user_id']}> (`{e['user_id']}`) / Guild: `{gid}`")
+
+        embed = discord.Embed(
+            title="📋 許可リスト",
+            description="\n".join(lines),
+            color=discord.Color.blurple()
+        )
+
+        if len(entries) > 50:
+            embed.set_footer(text="最初の50件のみ表示しています。")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # -----------------------------------------------------
     # /nuke
@@ -1130,7 +1709,7 @@ class SlashCog(commands.Cog):
     @is_allowed()
     @app_commands.describe(
         destination="実績を送信するチャンネル",
-        title="パネルタイトル（商品名として使用）",
+        title="パネルタイトル",
         description="パネル説明",
         counter_channel="任意：実績数を表示するチャンネル"
     )
@@ -1241,6 +1820,124 @@ class SlashCog(commands.Cog):
 
         panel["message_id"] = panel_message.id
         self.status_panels[panel_id] = panel
+
+    # -----------------------------------------------------
+    # /ticket
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="ticket",
+        description="チケットパネルを作成します"
+    )
+    @is_allowed()
+    @app_commands.describe(
+        button_label="ボタンの名前",
+        max_tickets="1人が作成できるチケット数",
+        mention_role="チケット作成時にメンションするロール",
+        category="チケットを作成するカテゴリー",
+        delete_permission="削除権限（管理者 or 全員）",
+        embed_title="埋め込みタイトル（任意）",
+        embed_description="埋め込み説明（任意）",
+        embed_image="埋め込み画像URL（任意）",
+        welcome_message="チケット作成後のメッセージ（任意）",
+        archive_channel="削除されたときのログチャンネル（任意）"
+    )
+    @app_commands.choices(
+        delete_permission=[
+            app_commands.Choice(name="管理者", value="admin"),
+            app_commands.Choice(name="全員", value="everyone")
+        ]
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ticket(
+        self,
+        interaction,
+        button_label: str,
+        max_tickets: app_commands.Range[int, 1, 10],
+        mention_role: discord.Role,
+        category: discord.CategoryChannel,
+        delete_permission: app_commands.Choice[str],
+        embed_title: str = None,
+        embed_description: str = None,
+        embed_image: str = None,
+        welcome_message: str = None,
+        archive_channel: discord.TextChannel = None
+    ):
+        panel_id = uuid.uuid4().hex[:10]
+
+        self.ticket_panels[panel_id] = {
+            "id": panel_id,
+            "button_label": button_label,
+            "max_tickets": max_tickets,
+            "mention_role_id": mention_role.id,
+            "embed_title": embed_title,
+            "embed_description": embed_description,
+            "embed_image": embed_image,
+            "welcome_message": welcome_message,
+            "delete_permission": delete_permission.value,
+            "category_id": category.id,
+            "archive_channel_id": archive_channel.id if archive_channel else None,
+            "channel_id": interaction.channel.id,
+            "message_id": None
+        }
+
+        embed = discord.Embed(
+            title="🎫 チケット",
+            description=f"下のボタンからチケットを作成できます。\n1人につき最大 {max_tickets} 件まで。",
+            color=discord.Color.blurple()
+        )
+
+        view = TicketPanelView(self, panel_id)
+        view.create_button.label = button_label
+
+        await interaction.response.send_message(
+            "チケットパネルを作成しました。",
+            ephemeral=True
+        )
+
+        message = await interaction.channel.send(embed=embed, view=view)
+        self.ticket_panels[panel_id]["message_id"] = message.id
+
+    # -----------------------------------------------------
+    # /ticket-edit
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="ticket-edit",
+        description="チケットパネルを編集します"
+    )
+    @is_allowed()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ticket_edit(self, interaction):
+        guild_panels = {
+            pid: panel for pid, panel in self.ticket_panels.items()
+            if panel.get("channel_id")
+        }
+
+        if not guild_panels:
+            await interaction.response.send_message(
+                "編集できるチケットパネルがありません。",
+                ephemeral=True
+            )
+            return
+
+        options = []
+        for pid, panel in list(guild_panels.items())[:25]:
+            options.append(
+                discord.SelectOption(
+                    label=f"{panel['button_label'][:50]}",
+                    description=f"ID: {pid}",
+                    value=pid
+                )
+            )
+
+        view = TicketEditSelectView(self, options)
+
+        await interaction.response.send_message(
+            "編集するチケットパネルを選択してください。",
+            view=view,
+            ephemeral=True
+        )
 
 
 # =========================================================
