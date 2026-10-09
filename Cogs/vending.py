@@ -8,6 +8,8 @@ import io
 from utils import is_allowed
 import paypayu
 import random
+import datetime
+import pytz
 
 VENDING_DATA_FILE = "vending_data.json"
 PAYPAY_DATA_FILE = "paypay_data.json"
@@ -91,12 +93,6 @@ async def vending_machine_autocomplete(interaction: discord.Interaction, current
     for vm_id, vm_data in vending_data.items():
         if isinstance(vm_data, dict) and vm_data.get("owner_id") == user_id_str:
             user_machines.append((vm_id, vm_data))
-
-    return [
-        app_commands.Choice(name=vm_data.get("name", "名称未設定"), value=vm_id)
-        for vm_id, vm_data in user_machines
-        if current.lower() in vm_data.get("name", "").lower()
-    ]
 
     return [
         app_commands.Choice(name=vm_data.get("name", "名称未設定"), value=vm_id)
@@ -866,6 +862,39 @@ class VendingMachineCog(commands.Cog):
                 embed.set_footer(text="Developer @anzy1m")
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
+                # ===== 共通の詳細Embed作成 =====
+                jst = pytz.timezone('Asia/Tokyo')
+                formatted_time = datetime.datetime.now(jst).strftime("%Y/%m/%d %H:%M:%S(JST)")
+
+                detail_embed = discord.Embed(
+                    title="購入が完了しました",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                detail_embed.add_field(name="購入日", value=f"```{formatted_time}```", inline=True)
+                detail_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}({interaction.guild.id})```", inline=True)
+                detail_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
+                detail_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
+                detail_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
+                detail_embed.add_field(name="購入した商品", value=purchased_content, inline=False)
+                detail_embed.set_footer(text="Developer @anzy1m")
+
+                # ===== DM送信 =====
+                try:
+                    await interaction.user.send(embed=detail_embed)
+                except:
+                    pass
+
+                # ===== 非公開ログチャンネル送信 =====
+                if vm.get("private_log_channel_id"):
+                    try:
+                        private_log_channel = self.bot.get_channel(int(vm["private_log_channel_id"]))
+                        if private_log_channel:
+                            await private_log_channel.send(embed=detail_embed)
+                    except:
+                        pass
+
+                # ===== 販売数カウント更新 =====
                 vending_data = load_json(VENDING_DATA_FILE)
                 if self.vending_machine_id in vending_data and isinstance(vending_data[self.vending_machine_id], dict):
                     vm_ref = vending_data[self.vending_machine_id]
@@ -876,6 +905,7 @@ class VendingMachineCog(commands.Cog):
                             break
                     save_json(VENDING_DATA_FILE, vending_data)
 
+                # ===== ロール付与 =====
                 try:
                     role_data = load_role_assignment_data()
                     role_info = role_data.get(self.vending_machine_id)
@@ -886,23 +916,7 @@ class VendingMachineCog(commands.Cog):
                 except:
                     pass
 
-                try:
-                    import datetime
-                    import pytz
-                    jst = pytz.timezone('Asia/Tokyo')
-                    formatted_time = datetime.datetime.now(jst).strftime("%Y/%m/%d %H:%M:%S(JST)")
-                    
-                    dm_embed = discord.Embed(title="購入が完了しました", color=discord.Color.green(), timestamp=discord.utils.utcnow())
-                    dm_embed.add_field(name="購入日", value=f"```{formatted_time}```", inline=True)
-                    dm_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}({interaction.guild.id})```", inline=True)
-                    dm_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
-                    dm_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
-                    dm_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
-                    dm_embed.set_footer(text="Developer @anzy1m")
-                    await interaction.user.send(purchased_content_text, embed=dm_embed)
-                except:
-                    pass
-
+                # ===== 公開ログチャンネル送信 =====
                 if vm.get("log_channel_id"):
                     try:
                         log_channel = self.bot.get_channel(int(vm["log_channel_id"]))
@@ -915,27 +929,6 @@ class VendingMachineCog(commands.Cog):
                             log_embed.add_field(name="購入者", value=f"{interaction.user.mention}({interaction.user.id})", inline=True)
                             log_embed.set_footer(text="Developer @anzy1m")
                             await log_channel.send(embed=log_embed)
-                    except:
-                        pass
-                
-                if vm.get("private_log_channel_id"):
-                    try:
-                        private_log_channel = self.bot.get_channel(int(vm["private_log_channel_id"]))
-                        if private_log_channel:
-                            private_log_embed = discord.Embed(color=discord.Color.orange())
-                            private_log_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
-                            private_log_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
-                            private_log_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}```", inline=True)
-                            private_log_embed.add_field(name="購入者", value=f"{interaction.user.mention}")
-                            private_log_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
-                            private_log_embed.add_field(name="自販機", value=f"```{vm['name']}```", inline=True)
-                            private_log_embed.set_footer(text="Developer @anzy1m")
-                            
-                            discord_file = discord.File(
-                                io.BytesIO(purchased_content_text.encode('utf-8')),
-                                filename=f"purchase_{interaction.user.id}_{int(discord.utils.utcnow().timestamp())}.txt"
-                            )
-                            await private_log_channel.send(embed=private_log_embed, file=discord_file)
                     except:
                         pass
                 
