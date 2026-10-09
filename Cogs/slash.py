@@ -505,6 +505,113 @@ class StopGiveawayView(discord.ui.View):
 
 
 # =========================================================
+# VERIFY
+# =========================================================
+
+class VerifyMathModal(discord.ui.Modal):
+    def __init__(self, cog, role, answer):
+        super().__init__(title="計算認証")
+        self.cog = cog
+        self.role = role
+        self.answer = answer
+
+        self.answer_input = discord.ui.TextInput(
+            label="答えを入力してください",
+            placeholder="半角数字で入力",
+            max_length=10,
+            required=True
+        )
+        self.add_item(self.answer_input)
+
+    async def on_submit(self, interaction):
+        if self.answer_input.value.strip() != str(self.answer):
+            await interaction.response.send_message(
+                "❌ 答えが違います。もう一度お試しください。",
+                ephemeral=True
+            )
+            return
+
+        try:
+            await interaction.user.add_roles(
+                self.role,
+                reason="Verify (math)"
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "ロールを付与できません。Botの権限を確認してください。",
+                ephemeral=True
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "ロールの付与に失敗しました。",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "✅ 認証が完了しました！",
+            ephemeral=True
+        )
+
+
+class VerifyView(discord.ui.View):
+    def __init__(self, cog, role, verify_type):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.role = role
+        self.verify_type = verify_type
+
+        self.verify_button.custom_id = f"verify_{role.id}_{verify_type}"
+        if verify_type == "button":
+            self.verify_button.label = "✅ 認証する"
+        else:
+            self.verify_button.label = "🧮 計算して認証"
+
+    @discord.ui.button(
+        label="認証",
+        style=discord.ButtonStyle.success,
+        custom_id="verify_default"
+    )
+    async def verify_button(self, interaction, button):
+        if self.verify_type == "button":
+            # ボタン認証：即座にロール付与
+            try:
+                await interaction.user.add_roles(
+                    self.role,
+                    reason="Verify (button)"
+                )
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "ロールを付与できません。Botの権限を確認してください。",
+                    ephemeral=True
+                )
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message(
+                    "ロールの付与に失敗しました。",
+                    ephemeral=True
+                )
+                return
+
+            await interaction.response.send_message(
+                "✅ 認証が完了しました！",
+                ephemeral=True
+            )
+
+        elif self.verify_type == "math":
+            # 計算認証：モーダルを表示
+            a = random.randint(1, 20)
+            b = random.randint(1, 20)
+            answer = a + b
+
+            modal = VerifyMathModal(self.cog, self.role, answer)
+            modal.title = f"計算認証: {a} + {b} = ?"
+
+            await interaction.response.send_modal(modal)
+
+
+# =========================================================
 # TICKET
 # =========================================================
 
@@ -529,7 +636,6 @@ class TicketCloseView(discord.ui.View):
             )
             return
 
-        # 削除権限チェック
         if panel["delete_permission"] == "admin":
             if not interaction.user.guild_permissions.manage_channels:
                 await interaction.response.send_message(
@@ -545,7 +651,6 @@ class TicketCloseView(discord.ui.View):
 
         channel = interaction.channel
 
-        # アーカイブログ送信
         archive_id = panel.get("archive_channel_id")
         if archive_id:
             archive = interaction.guild.get_channel(archive_id)
@@ -595,7 +700,6 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
-        # 作成数チェック
         user_tickets = [
             ch for ch in interaction.guild.channels
             if isinstance(ch, discord.TextChannel)
@@ -618,10 +722,8 @@ class TicketPanelView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True)
 
-        # チャンネル名
         channel_name = f"ticket-{interaction.user.name}"[:100]
 
-        # 権限設定
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(
                 view_channel=False
@@ -663,7 +765,6 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
-        # 埋め込み作成
         embed = discord.Embed(
             title=panel.get("embed_title") or "チケット",
             description=panel.get("embed_description") or "サポートします。",
@@ -672,7 +773,6 @@ class TicketPanelView(discord.ui.View):
         if panel.get("embed_image"):
             embed.set_image(url=panel["embed_image"])
 
-        # メンション
         mention_text = interaction.user.mention
         if mention_role_id:
             role = interaction.guild.get_role(mention_role_id)
@@ -874,7 +974,6 @@ class VouchModal(discord.ui.Modal):
             )
             return
 
-        # 個数のバリデーション
         if not self.quantity.value.isdigit():
             await interaction.response.send_message(
                 "個数は数字のみで入力してください。",
@@ -1111,8 +1210,112 @@ class TicketEditMenuView(discord.ui.View):
     )
     async def field_select(self, interaction, select):
         field = select.values[0]
-        await interaction.response.send_modal(
-            TicketEditModal(self.cog, self.panel_id, field)
+
+        # カテゴリー / ロール / チャンネル はセレクトメニューで選択
+        if field == "category":
+            categories = interaction.guild.categories[:25]
+            if not categories:
+                await interaction.response.send_message(
+                    "カテゴリーがありません。",
+                    ephemeral=True
+                )
+                return
+            options = [
+                discord.SelectOption(label=c.name[:100], value=str(c.id))
+                for c in categories
+            ]
+            view = TicketEditObjectSelectView(
+                self.cog, self.panel_id, field, options
+            )
+            await interaction.response.edit_message(
+                content="新しいカテゴリーを選択してください。",
+                view=view
+            )
+
+        elif field == "mention_role":
+            roles = [
+                r for r in interaction.guild.roles
+                if not r.is_default() and not r.managed
+            ][:25]
+            if not roles:
+                await interaction.response.send_message(
+                    "ロールがありません。",
+                    ephemeral=True
+                )
+                return
+            options = [
+                discord.SelectOption(label=r.name[:100], value=str(r.id))
+                for r in roles
+            ]
+            view = TicketEditObjectSelectView(
+                self.cog, self.panel_id, field, options
+            )
+            await interaction.response.edit_message(
+                content="新しいメンションロールを選択してください。",
+                view=view
+            )
+
+        elif field == "archive_channel":
+            channels = [
+                c for c in interaction.guild.text_channels
+            ][:25]
+            if not channels:
+                await interaction.response.send_message(
+                    "テキストチャンネルがありません。",
+                    ephemeral=True
+                )
+                return
+            options = [
+                discord.SelectOption(label=c.name[:100], value=str(c.id))
+                for c in channels
+            ]
+            view = TicketEditObjectSelectView(
+                self.cog, self.panel_id, field, options
+            )
+            await interaction.response.edit_message(
+                content="新しいアーカイブチャンネルを選択してください。",
+                view=view
+            )
+
+        else:
+            await interaction.response.send_modal(
+                TicketEditModal(self.cog, self.panel_id, field)
+            )
+
+
+class TicketEditObjectSelectView(discord.ui.View):
+    def __init__(self, cog, panel_id, field, options):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.field = field
+        self.select.options = options
+
+    @discord.ui.select(
+        placeholder="選択してください",
+        custom_id="ticket_edit_object_select"
+    )
+    async def select(self, interaction, select):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.edit_message(
+                content="パネルが見つかりません。",
+                view=None
+            )
+            return
+
+        value = int(select.values[0])
+
+        if self.field == "category":
+            panel["category_id"] = value
+        elif self.field == "mention_role":
+            panel["mention_role_id"] = value
+        elif self.field == "archive_channel":
+            panel["archive_channel_id"] = value
+
+        await interaction.response.edit_message(
+            content=f"`{self.field}` を更新しました。",
+            view=None
         )
 
 
@@ -1148,11 +1351,6 @@ class TicketEditModal(discord.ui.Modal):
                 panel["button_label"] = value or panel["button_label"]
             elif field == "max_tickets":
                 panel["max_tickets"] = int(value) if value else panel["max_tickets"]
-            elif field == "mention_role":
-                if value:
-                    panel["mention_role_id"] = int(value)
-                else:
-                    panel["mention_role_id"] = None
             elif field == "embed_title":
                 panel["embed_title"] = value
             elif field == "embed_description":
@@ -1166,14 +1364,6 @@ class TicketEditModal(discord.ui.Modal):
                     panel["delete_permission"] = value
                 else:
                     raise ValueError("admin または everyone を指定してください。")
-            elif field == "category":
-                if value:
-                    panel["category_id"] = int(value)
-            elif field == "archive_channel":
-                if value:
-                    panel["archive_channel_id"] = int(value)
-                else:
-                    panel["archive_channel_id"] = None
         except ValueError as error:
             await interaction.response.send_message(
                 f"値が不正です: {error}",
@@ -1186,7 +1376,6 @@ class TicketEditModal(discord.ui.Modal):
             channel = interaction.guild.get_channel(panel["channel_id"])
             if isinstance(channel, discord.TextChannel):
                 message = await channel.fetch_message(panel["message_id"])
-                # ボタン名を更新するためにビューを再生成
                 new_view = TicketPanelView(self.cog, self.panel_id)
                 new_view.create_button.label = panel["button_label"]
                 await message.edit(view=new_view)
