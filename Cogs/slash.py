@@ -508,6 +508,32 @@ class StopGiveawayView(discord.ui.View):
 # VERIFY
 # =========================================================
 
+def build_verify_embed(title: str, description: str, role: discord.Role):
+    """認証パネル用の埋め込みを作成する。
+
+    構成:
+      [タイトル]
+      [説明文]
+      (空行)
+      認証後 @ロール が付与されます
+      (空行)
+      Dev. @anzy1m
+    """
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"{description}\n\n"
+            f"認証後 {role.mention} が付与されます\n\n"
+            f"Dev. <@anzy1m>" if False else
+            f"{description}\n\n"
+            f"認証後 {role.mention} が付与されます\n\n"
+            f"Dev. @anzy1m"
+        ),
+        color=discord.Color.blurple()
+    )
+    return embed
+
+
 class VerifyMathModal(discord.ui.Modal):
     def __init__(self, cog, role, answer):
         super().__init__(title="計算認証")
@@ -632,11 +658,7 @@ class VerifyRoleSelectView(discord.ui.View):
             return
 
         view = VerifyView(self.cog, role, self.verify_type)
-        embed = discord.Embed(
-            title=self.title,
-            description=self.description,
-            color=discord.Color.blurple()
-        )
+        embed = build_verify_embed(self.title, self.description, role)
 
         await interaction.channel.send(embed=embed, view=view)
         await interaction.response.edit_message(
@@ -1872,9 +1894,10 @@ class SlashCog(commands.Cog):
     )
     @is_allowed()
     @app_commands.describe(
-        type="認証方法",
+        type="認証方法（計算認証 or ボタン認証）",
         title="パネルのタイトル",
-        description="パネルの説明"
+        description="パネルの説明",
+        role="認証後に付与するロール（省略時は選択メニュー）"
     )
     @app_commands.choices(
         type=[
@@ -1886,9 +1909,10 @@ class SlashCog(commands.Cog):
     async def verify(
         self,
         interaction,
-        type: app_commands.Choice[str],
+        type: app_commands.Choice[str] = None,
         title: str = "認証",
-        description: str = "下のボタンから認証してください。"
+        description: str = "下のボタンから認証してください。",
+        role: discord.Role = None
     ):
         if not interaction.guild:
             await interaction.response.send_message(
@@ -1897,6 +1921,28 @@ class SlashCog(commands.Cog):
             )
             return
 
+        verify_type = type.value if type else "button"
+
+        # ロールが指定されている場合はそのままパネルを作成
+        if role is not None:
+            if role.is_default() or role.managed:
+                await interaction.response.send_message(
+                    "このロールは設定できません。",
+                    ephemeral=True
+                )
+                return
+
+            view = VerifyView(self, role, verify_type)
+            embed = build_verify_embed(title, description, role)
+
+            await interaction.response.send_message(
+                "認証パネルを作成しました。",
+                ephemeral=True
+            )
+            await interaction.channel.send(embed=embed, view=view)
+            return
+
+        # ロールが未指定の場合はセレクトメニューで選択
         roles = [
             r for r in interaction.guild.roles
             if not r.is_default()
@@ -1920,7 +1966,7 @@ class SlashCog(commands.Cog):
         ]
 
         view = VerifyRoleSelectView(
-            self, type.value, title, description
+            self, verify_type, title, description
         )
         view.role_select.options = options
 
