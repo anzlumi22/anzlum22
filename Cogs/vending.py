@@ -379,7 +379,7 @@ class VendingMachineCog(commands.Cog):
         else:
             embed = discord.Embed(title="自販機", description="購入したい商品を下のメニューから選択してください。", color=discord.Color.green())
         
-        embed.set_footer(text="Developer @Rem_3886")
+        embed.set_footer(text="Developer @anzy1m")
 
         products = vm.get("products", [])
         if products:
@@ -586,7 +586,7 @@ class VendingMachineCog(commands.Cog):
                     color=discord.Color.green()
                 )
             
-            embed.set_footer(text="Developer @Rem_3886")
+            embed.set_footer(text="Developer @anzy1m")
 
             products = vm.get("products", [])
             if products:
@@ -743,7 +743,7 @@ class VendingMachineCog(commands.Cog):
             else:
                 embed.add_field(name="金額", value=f"```{final_price}円```", inline=False)
             
-            embed.set_footer(text="Developer @Rem_3886")
+            embed.set_footer(text="Developer @anzy1m")
             
             view = VendingMachineCog.PurchaseConfirmView(
                 self.vending_machine_id, 
@@ -791,7 +791,7 @@ class VendingMachineCog(commands.Cog):
                         description="この自販機は削除されているか、データが不正です。",
                         color=discord.Color.red()
                     )
-                    embed.set_footer(text="Developer @Rem_3886")
+                    embed.set_footer(text="Developer @anzy1m")
                     return await interaction.followup.send(embed=embed, ephemeral=True)
  
                 if self.final_price > 0:
@@ -863,7 +863,7 @@ class VendingMachineCog(commands.Cog):
                     timestamp=discord.utils.utcnow()
                 )
                 embed.add_field(name="購入した商品", value=purchased_content, inline=False)
-                embed.set_footer(text="Developer @Rem_3886")
+                embed.set_footer(text="Developer @anzy1m")
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
                 vending_data = load_json(VENDING_DATA_FILE)
@@ -898,7 +898,7 @@ class VendingMachineCog(commands.Cog):
                     dm_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
                     dm_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
                     dm_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
-                    dm_embed.set_footer(text="Developer @Rem_3886")
+                    dm_embed.set_footer(text="Developer @anzy1m")
                     await interaction.user.send(purchased_content_text, embed=dm_embed)
                 except:
                     pass
@@ -913,7 +913,7 @@ class VendingMachineCog(commands.Cog):
                             log_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
                             log_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}```", inline=True)
                             log_embed.add_field(name="購入者", value=f"{interaction.user.mention}({interaction.user.id})", inline=True)
-                            log_embed.set_footer(text="Developer @Rem_3886")
+                            log_embed.set_footer(text="Developer @anzy1m")
                             await log_channel.send(embed=log_embed)
                     except:
                         pass
@@ -929,7 +929,7 @@ class VendingMachineCog(commands.Cog):
                             private_log_embed.add_field(name="購入者", value=f"{interaction.user.mention}")
                             private_log_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
                             private_log_embed.add_field(name="自販機", value=f"```{vm['name']}```", inline=True)
-                            private_log_embed.set_footer(text="Developer @Rem_3886")
+                            private_log_embed.set_footer(text="Developer @anzy1m")
                             
                             discord_file = discord.File(
                                 io.BytesIO(purchased_content_text.encode('utf-8')),
@@ -1025,7 +1025,7 @@ class VendingMachineCog(commands.Cog):
                         description="この自販機は削除されているか、存在しません。",
                         color=discord.Color.red()
                     )
-                    embed.set_footer(text="Developer @Rem_3886")
+                    embed.set_footer(text="Developer @anzy1m")
                     return await interaction.response.send_message(embed=embed, ephemeral=True)
                 
                 products = vm.get("products", [])
@@ -1046,7 +1046,7 @@ class VendingMachineCog(commands.Cog):
                                     description=f"現在 {product['name']}の在庫が不足しています。",
                                     color=discord.Color.orange()
                                 )
-                                embed.set_footer(text="Developer @Rem_3886")
+                                embed.set_footer(text="Developer @anzy1m")
                                 return await interaction.response.send_message(embed=embed, ephemeral=True)
                     except:
                         embed = discord.Embed(
@@ -1054,7 +1054,7 @@ class VendingMachineCog(commands.Cog):
                             description=f"現在 {product['name']}の在庫が不足しています。",
                             color=discord.Color.orange()
                         )
-                        embed.set_footer(text="Developer @Rem_3886")
+                        embed.set_footer(text="Developer @anzy1m")
                         return await interaction.response.send_message(embed=embed, ephemeral=True)
                     
                     modal = VendingMachineCog.CouponModal(self.vending_machine_id, product, self.bot)
@@ -1111,7 +1111,7 @@ class VendingMachineCog(commands.Cog):
                         description="この自販機は削除されているか、存在しません。",
                         color=discord.Color.red()
                     )
-                    embed.set_footer(text="Developer @Rem_3886")
+                    embed.set_footer(text="Developer @anzy1m")
                     return await interaction.response.send_message(embed=embed, ephemeral=True)
                 
                 products = vm.get("products", [])
@@ -1224,7 +1224,7 @@ class VendingMachineCog(commands.Cog):
                         )
                         embed.add_field(name="追加商品", value=f"```{product['name']}```", inline=True)
                         embed.add_field(name="追加数", value=f"```{added_count}個```", inline=True)
-                        embed.set_footer(text="Developer @Rem_3886")
+                        embed.set_footer(text="Developer @anzy1m")
                         
                         await channel.send(f"{role.mention}", embed=embed)
                         
@@ -1293,7 +1293,7 @@ class VendingMachineCog(commands.Cog):
                         )
                         embed.add_field(name="追加商品", value=f"```{product['name']}```", inline=True)
                         embed.add_field(name="追加数", value=f"```{added_count}個```", inline=True)
-                        embed.set_footer(text="Developer @Rem_3886")
+                        embed.set_footer(text="Developer @anzy1m")
                         
                         await channel.send(f"{role.mention}", embed=embed)
                         
@@ -1377,7 +1377,7 @@ class VendingMachineCog(commands.Cog):
                         timestamp=discord.utils.utcnow()
                     )
                     embed.add_field(name="引き出した無限在庫", value=withdrawn_content, inline=False)
-                    embed.set_footer(text="Developer @Rem_3886")
+                    embed.set_footer(text="Developer @anzy1m")
                     
                     await interaction.followup.send(embed=embed, ephemeral=True)
                 else:
@@ -1405,7 +1405,7 @@ class VendingMachineCog(commands.Cog):
                             timestamp=discord.utils.utcnow()
                         )
                         embed.add_field(name="引き出した在庫", value=withdrawn_content, inline=False)
-                        embed.set_footer(text="Developer @Rem_3886")
+                        embed.set_footer(text="Developer @anzy1m")
                         
                         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1477,7 +1477,7 @@ class VendingMachineCog(commands.Cog):
                                 )
                                 embed.add_field(name="在庫内容", value=stock_content, inline=False)
                             
-                            embed.set_footer(text="Developer @Rem_3886")
+                            embed.set_footer(text="Developer @anzy1m")
                             await interaction.followup.send(embed=embed, ephemeral=True)
 
                     except FileNotFoundError:
@@ -1640,7 +1640,7 @@ class VendingMachineCog(commands.Cog):
                         description=f"商品「{self.product['name']}」を更新しました:\n• " + "\n• ".join(updated_fields),
                         color=discord.Color.green()
                     )
-                    embed.set_footer(text="Developer @Rem_3886")
+                    embed.set_footer(text="Developer @anzy1m")
                     await interaction.followup.send(embed=embed, ephemeral=True)
                 else:
                     await interaction.followup.send("更新する項目が入力されていません。", ephemeral=True)
