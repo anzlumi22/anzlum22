@@ -508,7 +508,7 @@ class StopGiveawayView(discord.ui.View):
 # VERIFY
 # =========================================================
 
-def build_verify_embed(title: str, description: str, role: discord.Role):
+def build_verify_embed(title: str, description: str, role: discord.Role, guild_id: int):
     """認証パネル用の埋め込みを作成する。
 
     構成:
@@ -516,18 +516,14 @@ def build_verify_embed(title: str, description: str, role: discord.Role):
       [説明文]
       (空行)
       認証後 @ロール が付与されます
-      (空行)
-      Dev. @anzy1m
+      **サーバーID | Dev.@anzy1m**
     """
     embed = discord.Embed(
         title=title,
         description=(
             f"{description}\n\n"
-            f"認証後 {role.mention} が付与されます\n\n"
-            f"Dev. <@anzy1m>" if False else
-            f"{description}\n\n"
-            f"認証後 {role.mention} が付与されます\n\n"
-            f"Dev. @anzy1m"
+            f"認証後 {role.mention} が付与されます\n"
+            f"**{guild_id} | Dev.@anzy1m**"
         ),
         color=discord.Color.blurple()
     )
@@ -589,13 +585,11 @@ class VerifyView(discord.ui.View):
         self.verify_type = verify_type
 
         self.verify_button.custom_id = f"verify_{role.id}_{verify_type}"
-        if verify_type == "button":
-            self.verify_button.label = "✅ 認証する"
-        else:
-            self.verify_button.label = "🧮 計算して認証"
+        # ボタンラベルは常に「認証 ✅」
+        self.verify_button.label = "認証 ✅"
 
     @discord.ui.button(
-        label="認証",
+        label="認証 ✅",
         style=discord.ButtonStyle.success,
         custom_id="verify_default"
     )
@@ -658,7 +652,9 @@ class VerifyRoleSelectView(discord.ui.View):
             return
 
         view = VerifyView(self.cog, role, self.verify_type)
-        embed = build_verify_embed(self.title, self.description, role)
+        embed = build_verify_embed(
+            self.title, self.description, role, interaction.guild_id
+        )
 
         await interaction.channel.send(embed=embed, view=view)
         await interaction.response.edit_message(
@@ -1895,8 +1891,8 @@ class SlashCog(commands.Cog):
     @is_allowed()
     @app_commands.describe(
         type="認証方法（計算認証 or ボタン認証）",
-        title="パネルのタイトル",
-        description="パネルの説明",
+        title="パネルのタイトル（任意）",
+        description="パネルの説明（任意）",
         role="認証後に付与するロール（省略時は選択メニュー）"
     )
     @app_commands.choices(
@@ -1933,7 +1929,9 @@ class SlashCog(commands.Cog):
                 return
 
             view = VerifyView(self, role, verify_type)
-            embed = build_verify_embed(title, description, role)
+            embed = build_verify_embed(
+                title, description, role, interaction.guild_id
+            )
 
             await interaction.response.send_message(
                 "認証パネルを作成しました。",
@@ -1942,7 +1940,7 @@ class SlashCog(commands.Cog):
             await interaction.channel.send(embed=embed, view=view)
             return
 
-        # ロールが未指定の場合はセレクトメニューで選択
+        # ロール未指定の場合はセレクトメニューで選択
         roles = [
             r for r in interaction.guild.roles
             if not r.is_default()
