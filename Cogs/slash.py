@@ -3,46 +3,34 @@ import asyncio
 import random
 import re
 import time
+import uuid
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 
-# ==============================
-# 時間変換
-# 例: 30m / 1h / 1d / 1week
-# ==============================
+# =========================================================
+# 共通
+# =========================================================
 
 def parse_duration(value: str) -> int:
-    value = value.strip().lower()
-
     match = re.fullmatch(
-        r"(\d+)\s*(m|h|d|w|minute|minutes|hour|hours|day|days|week|weeks)",
-        value
+        r"\s*(\d+)\s*(m|h|d|w|minute|minutes|hour|hours|day|days|week|weeks)\s*",
+        value.lower()
     )
 
     if not match:
-        raise ValueError(
-            "時間の形式が正しくありません。例: 30m、2h、1d、1week"
-        )
+        raise ValueError("例: 30m、2h、1d、1week")
 
     amount = int(match.group(1))
     unit = match.group(2)
 
     multipliers = {
-        "m": 60,
-        "minute": 60,
-        "minutes": 60,
-        "h": 3600,
-        "hour": 3600,
-        "hours": 3600,
-        "d": 86400,
-        "day": 86400,
-        "days": 86400,
-        "w": 604800,
-        "week": 604800,
-        "weeks": 604800,
+        "m": 60, "minute": 60, "minutes": 60,
+        "h": 3600, "hour": 3600, "hours": 3600,
+        "d": 86400, "day": 86400, "days": 86400,
+        "w": 604800, "week": 604800, "weeks": 604800
     }
 
     seconds = amount * multipliers[unit]
@@ -53,24 +41,27 @@ def parse_duration(value: str) -> int:
     return seconds
 
 
-# ==============================
-# Nuke
-# ==============================
+async def respond_error(interaction, message):
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+# =========================================================
+# NUKE
+# =========================================================
 
 class ConfirmNukeView(discord.ui.View):
-    def __init__(self, channel: discord.TextChannel):
-        super().__init__(timeout=30)
+    def __init__(self, channel):
+        super().__init__(timeout=60)
         self.channel = channel
 
     @discord.ui.button(
-        label="チャンネルを再作成する",
+        label="チャンネルを再作成",
         style=discord.ButtonStyle.danger
     )
-    async def confirm(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
+    async def confirm(self, interaction, button):
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
                 "チャンネル管理権限が必要です。",
@@ -91,30 +82,28 @@ class ConfirmNukeView(discord.ui.View):
 
         try:
             new_channel = await old_channel.clone(
-                reason=f"Nuke executed by {interaction.user}"
+                reason=f"Nuke requested by {interaction.user}"
             )
 
             await new_channel.edit(
                 category=old_channel.category,
-                position=old_channel.position,
-                reason="Nuke channel recreation"
+                position=old_channel.position
             )
 
             await old_channel.delete(
-                reason=f"Nuke executed by {interaction.user}"
+                reason=f"Nuke requested by {interaction.user}"
             )
 
             await new_channel.send("**nukeが完了しました。**")
 
         except discord.Forbidden:
-            if not old_channel.deleted:
-                await interaction.followup.send(
-                    "Botにチャンネル管理権限がありません。",
-                    ephemeral=True
-                )
+            await interaction.followup.send(
+                "Botにチャンネル管理権限がありません。",
+                ephemeral=True
+            )
         except discord.HTTPException as error:
             await interaction.followup.send(
-                f"チャンネルの再作成に失敗しました: {error}",
+                f"再作成に失敗しました: {error}",
                 ephemeral=True
             )
 
@@ -124,11 +113,7 @@ class ConfirmNukeView(discord.ui.View):
         label="キャンセル",
         style=discord.ButtonStyle.secondary
     )
-    async def cancel(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
+    async def cancel(self, interaction, button):
         await interaction.response.edit_message(
             content="キャンセルしました。",
             view=None
@@ -136,27 +121,65 @@ class ConfirmNukeView(discord.ui.View):
         self.stop()
 
 
-# ==============================
-# Giveaway
-# ==============================
+# =========================================================
+# GIVEAWAY
+# =========================================================
 
 class GiveawayView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, cog, giveaway_id, prize, winner_count, end_time):
         super().__init__(timeout=None)
+        self.cog = cog
+        self.giveaway_id = giveaway_id
+        self.prize = prize
+        self.winner_count = winner_count
+        self.end_time = end_time
         self.participants = set()
         self.ended = False
+        self.cancelled = False
+        self.message = None
+
+        self.join_button.custom_id = f"gw_join_{giveaway_id}"
+        self.list_button.custom_id = f"gw_list_{giveaway_id}"
+
+    def make_embed(self):
+        if self.cancelled:
+            color = discord.Color.red()
+            state = "中止"
+        elif self.ended:
+            color = discord.Color.dark_grey()
+            state = "終了"
+        else:
+            color = discord.Color.gold()
+            state = "開催中"
+
+        embed = discord.Embed(
+            title="🎉 Giveaway",
+            description=(
+                f"**景品:** {self.prize}\n"
+                f"**当選人数:** {self.winner_count}人\n"
+                f"**参加人数:** {len(self.participants)}人\n"
+                f"**終了:** <t:{self.end_time}:R>\n"
+                f"**状態:** {state}\n\n"
+                "参加するには下のボタンを押してください！"
+            ),
+            color=color
+        )
+        return embed
+
+    async def refresh(self):
+        if self.message:
+            try:
+                await self.message.edit(embed=self.make_embed(), view=self)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(
         label="🎉 参加する",
         style=discord.ButtonStyle.success,
-        custom_id="slash_giveaway_join"
+        custom_id="gw_join_default"
     )
-    async def join(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-        if self.ended:
+    async def join_button(self, interaction, button):
+        if self.ended or self.cancelled:
             await interaction.response.send_message(
                 "この抽選は終了しています。",
                 ephemeral=True
@@ -165,211 +188,325 @@ class GiveawayView(discord.ui.View):
 
         if interaction.user.id in self.participants:
             self.participants.remove(interaction.user.id)
-            message = "参加を取り消しました。"
+            text = "抽選への参加を取り消しました。"
         else:
             self.participants.add(interaction.user.id)
-            message = "抽選に参加しました！"
+            text = "抽選に参加しました！"
+
+        await interaction.response.send_message(text, ephemeral=True)
+        await self.refresh()
+
+    @discord.ui.button(
+        label="👥 参加者リスト",
+        style=discord.ButtonStyle.primary,
+        custom_id="gw_list_default"
+    )
+    async def list_button(self, interaction, button):
+        ids = sorted(self.participants)
+
+        embed = discord.Embed(
+            title="👥 参加者リスト",
+            description=(
+                "\n".join(f"• <@{uid}>" for uid in ids[:100])
+                if ids else "参加者はいません。"
+            ),
+            color=discord.Color.blurple()
+        )
+        embed.add_field(
+            name="参加人数",
+            value=f"{len(ids)}人",
+            inline=False
+        )
+
+        if len(ids) > 100:
+            embed.set_footer(text="最初の100人のみ表示しています。")
 
         await interaction.response.send_message(
-            message,
+            embed=embed,
             ephemeral=True
         )
 
 
-# ==============================
-# Verify
-# ==============================
+# =========================================================
+# VOUCH PANEL
+# =========================================================
 
-class MathAnswerModal(discord.ui.Modal):
-    def __init__(
-        self,
-        cog,
-        role: discord.Role,
-        number1: int,
-        number2: int
-    ):
-        super().__init__(title="認証")
+class VouchModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id):
+        super().__init__(title="実績を送信")
         self.cog = cog
-        self.role = role
-        self.answer = number1 + number2
+        self.panel_id = panel_id
 
-        self.answer_input = discord.ui.TextInput(
-            label=f"{number1} + {number2} の答え",
-            placeholder="答えを入力",
-            required=True,
-            max_length=10
+        self.content = discord.ui.TextInput(
+            label="実績内容",
+            placeholder="実績の内容を入力してください",
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            required=True
         )
-        self.add_item(self.answer_input)
+        self.add_item(self.content)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild:
+    async def on_submit(self, interaction):
+        panel = self.cog.vouch_panels.get(self.panel_id)
+
+        if not panel or not interaction.guild:
             await interaction.response.send_message(
-                "サーバー内で実行してください。",
+                "パネルが見つからないか、サーバー外で使用されています。",
                 ephemeral=True
             )
             return
 
-        if not self.answer_input.value.strip().isdigit():
+        destination = interaction.guild.get_channel(panel["destination_id"])
+
+        if not isinstance(destination, discord.TextChannel):
             await interaction.response.send_message(
-                "数字を入力してください。",
+                "実績送信先チャンネルが見つかりません。",
                 ephemeral=True
             )
             return
 
-        if int(self.answer_input.value.strip()) != self.answer:
-            await interaction.response.send_message(
-                "答えが違います。もう一度お試しください。",
-                ephemeral=True
-            )
-            return
-
-        member = interaction.guild.get_member(interaction.user.id)
-
-        if member is None:
-            try:
-                member = await interaction.guild.fetch_member(
-                    interaction.user.id
-                )
-            except discord.HTTPException:
-                await interaction.response.send_message(
-                    "ユーザー情報を取得できませんでした。",
-                    ephemeral=True
-                )
-                return
+        embed = discord.Embed(
+            title=panel["title"],
+            description=self.content.value,
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(
+            name="送信者",
+            value=interaction.user.mention,
+            inline=False
+        )
 
         try:
-            await member.add_roles(
-                self.role,
-                reason="Verification completed"
-            )
+            await destination.send(embed=embed)
         except discord.Forbidden:
             await interaction.response.send_message(
-                "Botのロールが認証ロールより上にあるか確認してください。",
+                "Botに送信先への閲覧・送信権限がありません。",
                 ephemeral=True
             )
             return
         except discord.HTTPException:
             await interaction.response.send_message(
-                "ロール付与に失敗しました。",
+                "実績を送信できませんでした。",
                 ephemeral=True
             )
             return
 
+        panel["count"] += 1
+
+        counter_id = panel.get("counter_id")
+        if counter_id:
+            counter = interaction.guild.get_channel(counter_id)
+
+            if isinstance(counter, discord.TextChannel):
+                name = f"{panel['counter_base_name']} -{panel['count']}"[:100]
+                try:
+                    await counter.edit(
+                        name=name,
+                        reason="実績カウント更新"
+                    )
+                except discord.HTTPException:
+                    pass
+
         await interaction.response.send_message(
-            f"認証成功！ {self.role.mention} を付与しました。",
+            "✅ 実績を送信しました。",
             ephemeral=True
         )
 
 
-class VerifyView(discord.ui.View):
-    def __init__(self, cog, role: discord.Role, verify_type: str):
+class VouchView(discord.ui.View):
+    def __init__(self, cog, panel_id):
         super().__init__(timeout=None)
         self.cog = cog
-        self.role = role
-        self.verify_type = verify_type
-
-        if verify_type == "button":
-            self.verify_button.label = "✅ 認証する"
-            self.verify_button.custom_id = f"verify_button_{role.id}"
-        else:
-            self.verify_button.label = "🧮 計算して認証"
-            self.verify_button.custom_id = f"verify_math_{role.id}"
+        self.panel_id = panel_id
+        self.submit_button.custom_id = f"vouch_submit_{panel_id}"
 
     @discord.ui.button(
-        label="認証する",
-        style=discord.ButtonStyle.primary,
-        custom_id="verify_button_default"
+        label="📋 実績を送信",
+        style=discord.ButtonStyle.success,
+        custom_id="vouch_submit_default"
     )
-    async def verify_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-        if self.verify_type == "button":
-            if not interaction.guild:
-                await interaction.response.send_message(
-                    "サーバー内で実行してください。",
-                    ephemeral=True
-                )
-                return
+    async def submit_button(self, interaction, button):
+        await interaction.response.send_modal(
+            VouchModal(self.cog, self.panel_id)
+        )
 
-            member = interaction.guild.get_member(interaction.user.id)
 
-            if member is None:
-                try:
-                    member = await interaction.guild.fetch_member(
-                        interaction.user.id
-                    )
-                except discord.HTTPException:
-                    await interaction.response.send_message(
-                        "ユーザー情報を取得できませんでした。",
-                        ephemeral=True
-                    )
-                    return
+# =========================================================
+# STATUS PANEL
+# =========================================================
 
-            if self.role in member.roles:
-                await interaction.response.send_message(
-                    "すでに認証済みです。",
-                    ephemeral=True
-                )
-                return
+def status_embed(panel):
+    colors = {
+        "対応不可": discord.Color.red(),
+        "対応遅延": discord.Color.orange(),
+        "対応可能": discord.Color.green()
+    }
 
-            try:
-                await member.add_roles(
-                    self.role,
-                    reason="Verification completed"
-                )
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "Botのロールを認証ロールより上に移動してください。",
-                    ephemeral=True
-                )
-                return
-            except discord.HTTPException:
-                await interaction.response.send_message(
-                    "ロール付与に失敗しました。",
-                    ephemeral=True
-                )
-                return
+    embed = discord.Embed(
+        title=panel["title"],
+        description=panel["description"],
+        color=colors[panel["status"]]
+    )
 
+    embed.add_field(
+        name="作成者",
+        value=f"# {panel['creator_mention']}",
+        inline=False
+    )
+    embed.add_field(
+        name="現在の状態",
+        value=f"{panel['emoji']} **{panel['status']}**",
+        inline=False
+    )
+    embed.add_field(
+        name="一言",
+        value=panel["message"] or "設定なし",
+        inline=False
+    )
+    return embed
+
+
+class StatusMessageModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id):
+        super().__init__(title="一言を変更")
+        self.cog = cog
+        self.panel_id = panel_id
+
+        self.message_input = discord.ui.TextInput(
+            label="一言",
+            placeholder="現在の状況など",
+            required=False,
+            max_length=200
+        )
+        self.add_item(self.message_input)
+
+    async def on_submit(self, interaction):
+        panel = self.cog.status_panels.get(self.panel_id)
+
+        if not panel or interaction.user.id != panel["creator_id"]:
             await interaction.response.send_message(
-                f"認証成功！ {self.role.mention} を付与しました。",
+                "このパネルの作成者だけが変更できます。",
                 ephemeral=True
             )
+            return
 
-        else:
-            number1 = random.randint(1, 20)
-            number2 = random.randint(1, 20)
+        panel["message"] = self.message_input.value.strip()
+        await self.cog.refresh_status(panel)
 
-            await interaction.response.send_modal(
-                MathAnswerModal(
-                    self.cog,
-                    self.role,
-                    number1,
-                    number2
-                )
+        await interaction.response.send_message(
+            "一言を更新しました。",
+            ephemeral=True
+        )
+
+
+class StatusView(discord.ui.View):
+    def __init__(self, cog, panel_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.status_select.custom_id = f"status_select_{panel_id}"
+        self.message_button.custom_id = f"status_message_{panel_id}"
+
+    async def check_creator(self, interaction):
+        panel = self.cog.status_panels.get(self.panel_id)
+
+        if not panel:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
             )
+            return False
+
+        if interaction.user.id != panel["creator_id"]:
+            await interaction.response.send_message(
+                "このパネルを変更できるのは作成者本人だけです。",
+                ephemeral=True
+            )
+            return False
+
+        return True
+
+    @discord.ui.select(
+        placeholder="対応状況を変更",
+        options=[
+            discord.SelectOption(
+                label="対応不可", value="対応不可", emoji="🔴"
+            ),
+            discord.SelectOption(
+                label="対応遅延", value="対応遅延", emoji="🟠"
+            ),
+            discord.SelectOption(
+                label="対応可能", value="対応可能", emoji="🟢"
+            )
+        ],
+        custom_id="status_select_default"
+    )
+    async def status_select(self, interaction, select):
+        if not await self.check_creator(interaction):
+            return
+
+        panel = self.cog.status_panels[self.panel_id]
+        panel["status"] = select.values[0]
+        panel["emoji"] = {
+            "対応不可": "🔴",
+            "対応遅延": "🟠",
+            "対応可能": "🟢"
+        }[panel["status"]]
+
+        await self.cog.refresh_status(panel)
+        await interaction.response.send_message(
+            f"状態を「{panel['status']}」に変更しました。",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="✏️ 一言変更",
+        style=discord.ButtonStyle.primary,
+        custom_id="status_message_default"
+    )
+    async def message_button(self, interaction, button):
+        if not await self.check_creator(interaction):
+            return
+
+        await interaction.response.send_modal(
+            StatusMessageModal(self.cog, self.panel_id)
+        )
 
 
-# ==============================
-# Slash Cog
-# ==============================
+# =========================================================
+# MAIN COG
+# =========================================================
 
 class SlashCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot):
         self.bot = bot
         self.active_giveaways = {}
+        self.giveaway_tasks = {}
+        self.vouch_panels = {}
+        self.status_panels = {}
 
-    # ==============================
+    async def refresh_status(self, panel):
+        channel = self.bot.get_channel(panel["channel_id"])
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        try:
+            message = await channel.fetch_message(panel["message_id"])
+            await message.edit(embed=status_embed(panel))
+        except discord.HTTPException:
+            pass
+
+    # -----------------------------------------------------
     # /nuke
-    # ==============================
+    # -----------------------------------------------------
 
     @app_commands.command(
         name="nuke",
-        description="現在のチャンネルを再作成します"
+        description="現在のテキストチャンネルを再作成します"
     )
     @app_commands.checks.has_permissions(manage_channels=True)
-    async def nuke(self, interaction: discord.Interaction):
+    async def nuke(self, interaction):
         if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
                 "テキストチャンネルで使用してください。",
@@ -378,34 +515,14 @@ class SlashCog(commands.Cog):
             return
 
         await interaction.response.send_message(
-            "本当にこのチャンネルを再作成しますか？\n"
-            "現在のメッセージ履歴は引き継がれません。",
+            "本当にこのチャンネルを再作成しますか？",
             view=ConfirmNukeView(interaction.channel),
             ephemeral=True
         )
 
-    @nuke.error
-    async def nuke_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError
-    ):
-        if isinstance(error, app_commands.MissingPermissions):
-            message = "このコマンドにはチャンネル管理権限が必要です。"
-        else:
-            message = "コマンドの実行中にエラーが発生しました。"
-
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(
-                message,
-                ephemeral=True
-            )
-
-    # ==============================
+    # -----------------------------------------------------
     # /giveaway
-    # ==============================
+    # -----------------------------------------------------
 
     @app_commands.command(
         name="giveaway",
@@ -413,13 +530,13 @@ class SlashCog(commands.Cog):
     )
     @app_commands.describe(
         prize="景品名",
-        duration="時間（例: 30m、1h、1d、1week）",
+        duration="例: 30m、1h、1d、1week",
         winners="当選人数"
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway(
         self,
-        interaction: discord.Interaction,
+        interaction,
         prize: str,
         duration: str,
         winners: app_commands.Range[int, 1, 20] = 1
@@ -433,97 +550,120 @@ class SlashCog(commands.Cog):
             )
             return
 
-        if not interaction.guild or not isinstance(
-            interaction.channel, discord.TextChannel
-        ):
+        if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
-                "サーバーのテキストチャンネルで使用してください。",
+                "テキストチャンネルで使用してください。",
                 ephemeral=True
             )
             return
 
-        end_timestamp = int(time.time() + seconds)
+        giveaway_id = uuid.uuid4().hex[:12]
+        end_time = int(time.time() + seconds)
 
-        embed = discord.Embed(
-            title="🎉 Giveaway",
-            description=(
-                f"**景品:** {prize}\n"
-                f"**当選人数:** {winners}人\n"
-                f"**終了:** <t:{end_timestamp}:R>\n\n"
-                "参加するには下のボタンを押してください！"
-            ),
-            color=discord.Color.gold()
+        view = GiveawayView(
+            self, giveaway_id, prize, winners, end_time
         )
-        embed.set_footer(text=f"主催者: {interaction.user}")
-
-        view = GiveawayView()
 
         await interaction.response.send_message(
             "抽選を開始しました。",
             ephemeral=True
         )
 
-        giveaway_message = await interaction.channel.send(
-            embed=embed,
+        message = await interaction.channel.send(
+            embed=view.make_embed(),
             view=view
         )
+        view.message = message
 
-        self.active_giveaways[giveaway_message.id] = view
+        self.active_giveaways[message.id] = view
 
-        await asyncio.sleep(seconds)
+        async def finish():
+            try:
+                await asyncio.sleep(seconds)
 
-        view.ended = True
-        view.stop()
+                if view.cancelled:
+                    return
 
+                view.ended = True
+                await view.refresh()
+
+                ids = list(view.participants)
+                if ids:
+                    chosen = random.sample(ids, min(winners, len(ids)))
+                    result = (
+                        f"🎉 **{prize}** の抽選が終了しました！\n"
+                        f"当選者: {' '.join(f'<@{uid}>' for uid in chosen)}"
+                    )
+                else:
+                    result = f"**{prize}** の抽選が終了しました。参加者はいませんでした。"
+
+                await interaction.channel.send(result)
+
+            except asyncio.CancelledError:
+                pass
+            except discord.HTTPException:
+                pass
+            finally:
+                self.active_giveaways.pop(message.id, None)
+                self.giveaway_tasks.pop(message.id, None)
+
+        self.giveaway_tasks[message.id] = asyncio.create_task(finish())
+
+    # -----------------------------------------------------
+    # /giveaway-stop
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="giveaway-stop",
+        description="進行中の抽選を中止します"
+    )
+    @app_commands.describe(message_id="抽選メッセージのID")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def giveaway_stop(self, interaction, message_id: str):
         try:
-            await giveaway_message.edit(view=None)
-        except discord.HTTPException:
-            pass
-
-        participant_ids = list(view.participants)
-
-        if not participant_ids:
-            result = "参加者がいなかったため、抽選は終了しました。"
-        else:
-            chosen_ids = random.sample(
-                participant_ids,
-                min(winners, len(participant_ids))
-            )
-            mentions = " ".join(f"<@{user_id}>" for user_id in chosen_ids)
-            result = (
-                f"🎉 **{prize}** の抽選が終了しました！\n"
-                f"当選者: {mentions}"
-            )
-
-        try:
-            await interaction.channel.send(result)
-        except discord.HTTPException:
-            pass
-
-        self.active_giveaways.pop(giveaway_message.id, None)
-
-    @giveaway.error
-    async def giveaway_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError
-    ):
-        if isinstance(error, app_commands.MissingPermissions):
-            message = "このコマンドにはサーバー管理権限が必要です。"
-        else:
-            message = "コマンドの実行中にエラーが発生しました。"
-
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
+            giveaway_id = int(message_id)
+        except ValueError:
             await interaction.response.send_message(
-                message,
+                "メッセージIDを数字で指定してください。",
                 ephemeral=True
             )
+            return
 
-    # ==============================
+        view = self.active_giveaways.get(giveaway_id)
+
+        if not view:
+            await interaction.response.send_message(
+                "進行中の抽選が見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        if interaction.guild_id != view.message.guild.id:
+            await interaction.response.send_message(
+                "このサーバーの抽選ではありません。",
+                ephemeral=True
+            )
+            return
+
+        view.cancelled = True
+        view.stop()
+
+        task = self.giveaway_tasks.get(giveaway_id)
+        if task:
+            task.cancel()
+
+        await view.refresh()
+        self.active_giveaways.pop(giveaway_id, None)
+        self.giveaway_tasks.pop(giveaway_id, None)
+
+        await interaction.response.send_message(
+            "抽選を中止しました。",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
     # /verify
-    # ==============================
+    # -----------------------------------------------------
 
     @app_commands.command(
         name="verify",
@@ -531,7 +671,7 @@ class SlashCog(commands.Cog):
     )
     @app_commands.describe(
         type="認証方法",
-        role="認証成功時に付与するロール",
+        role="認証後に付与するロール",
         title="パネルのタイトル",
         description="パネルの説明"
     )
@@ -544,7 +684,7 @@ class SlashCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def verify(
         self,
-        interaction: discord.Interaction,
+        interaction,
         type: app_commands.Choice[str],
         role: discord.Role,
         title: str = "認証",
@@ -559,49 +699,152 @@ class SlashCog(commands.Cog):
 
         if role.is_default() or role.managed:
             await interaction.response.send_message(
-                "このロールは認証ロールに設定できません。",
+                "このロールは設定できません。",
                 ephemeral=True
             )
             return
+
+        view = VerifyView(self, role, type.value)
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.blurple()
+        )
+
+        await interaction.response.send_message(
+            "認証パネルを作成しました。",
+            ephemeral=True
+        )
+        await interaction.channel.send(embed=embed, view=view)
+
+    # -----------------------------------------------------
+    # /vouch-panel
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="vouch-panel",
+        description="実績送信パネルを作成します"
+    )
+    @app_commands.describe(
+        destination="実績を送信するチャンネル",
+        title="パネルタイトル",
+        description="パネル説明",
+        counter_channel="任意：実績数を表示するチャンネル"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def vouch_panel(
+        self,
+        interaction,
+        destination: discord.TextChannel,
+        title: str,
+        description: str,
+        counter_channel: discord.TextChannel = None
+    ):
+        panel_id = uuid.uuid4().hex[:10]
+
+        self.vouch_panels[panel_id] = {
+            "destination_id": destination.id,
+            "title": title,
+            "description": description,
+            "count": 0,
+            "counter_id": counter_channel.id if counter_channel else None,
+            "counter_base_name": (
+                counter_channel.name if counter_channel else None
+            )
+        }
 
         embed = discord.Embed(
             title=title,
             description=description,
             color=discord.Color.blurple()
         )
-        embed.set_footer(text="Verification")
+        embed.set_footer(text=f"Vouch Panel: {panel_id}")
 
-        view = VerifyView(self, role, type.value)
+        view = VouchView(self, panel_id)
 
         await interaction.response.send_message(
-            "認証パネルを作成しました。",
+            "実績パネルを作成しました。",
+            ephemeral=True
+        )
+        await interaction.channel.send(embed=embed, view=view)
+
+    # -----------------------------------------------------
+    # /status
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="status",
+        description="対応状況パネルを作成します"
+    )
+    @app_commands.describe(
+        title="パネルタイトル",
+        description="パネル説明",
+        status="最初の対応状況",
+        message="一言"
+    )
+    @app_commands.choices(
+        status=[
+            app_commands.Choice(name="対応不可", value="対応不可"),
+            app_commands.Choice(name="対応遅延", value="対応遅延"),
+            app_commands.Choice(name="対応可能", value="対応可能")
+        ]
+    )
+    async def status(
+        self,
+        interaction,
+        title: str = "対応状況",
+        description: str = "現在の対応状況です。",
+        status: app_commands.Choice[str] = None,
+        message: str = ""
+    ):
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "テキストチャンネルで使用してください。",
+                ephemeral=True
+            )
+            return
+
+        selected_status = status.value if status else "対応可能"
+        emojis = {
+            "対応不可": "🔴",
+            "対応遅延": "🟠",
+            "対応可能": "🟢"
+        }
+
+        panel_id = uuid.uuid4().hex[:10]
+
+        panel = {
+            "id": panel_id,
+            "creator_id": interaction.user.id,
+            "creator_mention": interaction.user.mention,
+            "title": title,
+            "description": description,
+            "status": selected_status,
+            "emoji": emojis[selected_status],
+            "message": message,
+            "channel_id": interaction.channel.id,
+            "message_id": None
+        }
+
+        view = StatusView(self, panel_id)
+
+        await interaction.response.send_message(
+            "ステータスパネルを作成しました。",
             ephemeral=True
         )
 
-        await interaction.channel.send(
-            embed=embed,
+        panel_message = await interaction.channel.send(
+            embed=status_embed(panel),
             view=view
         )
 
-    @verify.error
-    async def verify_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError
-    ):
-        if isinstance(error, app_commands.MissingPermissions):
-            message = "このコマンドにはサーバー管理権限が必要です。"
-        else:
-            message = "コマンドの実行中にエラーが発生しました。"
+        panel["message_id"] = panel_message.id
+        self.status_panels[panel_id] = panel
 
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(
-                message,
-                ephemeral=True
-            )
 
+# =========================================================
+# EXTENSION SETUP
+# =========================================================
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SlashCog(bot))
