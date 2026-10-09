@@ -876,21 +876,24 @@ class VendingMachineCog(commands.Cog):
                 detail_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
                 detail_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
                 detail_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
-                detail_embed.add_field(name="購入した商品", value=purchased_content, inline=False)
                 detail_embed.set_footer(text="Developer @anzy1m")
 
-                # ===== DM送信 =====
+                # ===== DM送信（Embed + 商品内容そのまま） =====
                 try:
                     await interaction.user.send(embed=detail_embed)
+                    if purchased_content_text:
+                        await interaction.user.send(purchased_content_text)
                 except:
                     pass
 
-                # ===== 非公開ログチャンネル送信 =====
+                # ===== 非公開ログチャンネル送信（Embed + 商品内容そのまま） =====
                 if vm.get("private_log_channel_id"):
                     try:
                         private_log_channel = self.bot.get_channel(int(vm["private_log_channel_id"]))
                         if private_log_channel:
                             await private_log_channel.send(embed=detail_embed)
+                            if purchased_content_text:
+                                await private_log_channel.send(purchased_content_text)
                     except:
                         pass
 
