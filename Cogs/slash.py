@@ -575,7 +575,6 @@ class VerifyView(discord.ui.View):
     )
     async def verify_button(self, interaction, button):
         if self.verify_type == "button":
-            # ボタン認証：即座にロール付与
             try:
                 await interaction.user.add_roles(
                     self.role,
@@ -600,7 +599,6 @@ class VerifyView(discord.ui.View):
             )
 
         elif self.verify_type == "math":
-            # 計算認証：モーダルを表示
             a = random.randint(1, 20)
             b = random.randint(1, 20)
             answer = a + b
@@ -609,6 +607,42 @@ class VerifyView(discord.ui.View):
             modal.title = f"計算認証: {a} + {b} = ?"
 
             await interaction.response.send_modal(modal)
+
+
+class VerifyRoleSelectView(discord.ui.View):
+    def __init__(self, cog, verify_type, title, description):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.verify_type = verify_type
+        self.title = title
+        self.description = description
+        self.role_select.options = []
+
+    @discord.ui.select(
+        placeholder="認証後に付与するロールを選択",
+        custom_id="verify_role_select"
+    )
+    async def role_select(self, interaction, select):
+        role = interaction.guild.get_role(int(select.values[0]))
+        if not role:
+            await interaction.response.edit_message(
+                content="ロールが見つかりません。",
+                view=None
+            )
+            return
+
+        view = VerifyView(self.cog, role, self.verify_type)
+        embed = discord.Embed(
+            title=self.title,
+            description=self.description,
+            color=discord.Color.blurple()
+        )
+
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.response.edit_message(
+            content=f"✅ 認証パネルを作成しました（ロール: {role.mention}）",
+            view=None
+        )
 
 
 # =========================================================
@@ -1211,7 +1245,6 @@ class TicketEditMenuView(discord.ui.View):
     async def field_select(self, interaction, select):
         field = select.values[0]
 
-        # カテゴリー / ロール / チャンネル はセレクトメニューで選択
         if field == "category":
             categories = interaction.guild.categories[:25]
             if not categories:
@@ -1371,7 +1404,6 @@ class TicketEditModal(discord.ui.Modal):
             )
             return
 
-        # パネルメッセージのボタン名を更新
         try:
             channel = interaction.guild.get_channel(panel["channel_id"])
             if isinstance(channel, discord.TextChannel):
@@ -1841,7 +1873,6 @@ class SlashCog(commands.Cog):
     @is_allowed()
     @app_commands.describe(
         type="認証方法",
-        role="認証後に付与するロール",
         title="パネルのタイトル",
         description="パネルの説明"
     )
@@ -1856,7 +1887,6 @@ class SlashCog(commands.Cog):
         self,
         interaction,
         type: app_commands.Choice[str],
-        role: discord.Role,
         title: str = "認証",
         description: str = "下のボタンから認証してください。"
     ):
@@ -1867,25 +1897,38 @@ class SlashCog(commands.Cog):
             )
             return
 
-        if role.is_default() or role.managed:
+        roles = [
+            r for r in interaction.guild.roles
+            if not r.is_default()
+            and not r.managed
+            and not r.is_premium_subscriber()
+        ]
+
+        if not roles:
             await interaction.response.send_message(
-                "このロールは設定できません。",
+                "設定できるロールがありません。",
                 ephemeral=True
             )
             return
 
-        view = VerifyView(self, role, type.value)
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
+        options = [
+            discord.SelectOption(
+                label=r.name[:100],
+                value=str(r.id)
+            )
+            for r in roles[:25]
+        ]
+
+        view = VerifyRoleSelectView(
+            self, type.value, title, description
         )
+        view.role_select.options = options
 
         await interaction.response.send_message(
-            "認証パネルを作成しました。",
+            "認証後に付与するロールを選択してください。",
+            view=view,
             ephemeral=True
         )
-        await interaction.channel.send(embed=embed, view=view)
 
     # -----------------------------------------------------
     # /vouch-panel
