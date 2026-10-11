@@ -1592,7 +1592,44 @@ class SlashCog(commands.Cog):
         user: discord.User,
         message: str
     ):
-    
+        # -----------------------------------------------------
+    # /dm送信
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="dm送信",
+        description="指定したユーザーにDMを送信します"
+    )
+    @app_commands.describe(
+        user="送信先のユーザー",
+        message="送信するメッセージ"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def dm_anc(
+        self,
+        interaction,
+        user: discord.User,
+        message: str
+    ):
+        try:
+            await user.send(message)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "このユーザーにはDMを送信できません（DMを拒否している可能性があります）。",
+                ephemeral=True
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "DMの送信に失敗しました。",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"{user.mention} にDMを送信しました。",
+            ephemeral=True
+        )
     # -----------------------------------------------------
     # /認証パネル
     # -----------------------------------------------------
