@@ -1574,11 +1574,11 @@ class SlashCog(commands.Cog):
         await interaction.channel.send(embed=embed)
 
     # -----------------------------------------------------
-    # /DM送信
+    # /dm送信
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="DM送信",
+        name="dm送信",
         description="指定したユーザーにDMを送信します"
     )
     @app_commands.describe(
@@ -1592,26 +1592,7 @@ class SlashCog(commands.Cog):
         user: discord.User,
         message: str
     ):
-        try:
-            await user.send(message)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "このユーザーにはDMを送信できません（DMを拒否している可能性があります）。",
-                ephemeral=True
-            )
-            return
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "DMの送信に失敗しました。",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_message(
-            f"{user.mention} にDMを送信しました。",
-            ephemeral=True
-        )
-
+    
     # -----------------------------------------------------
     # /認証パネル
     # -----------------------------------------------------
