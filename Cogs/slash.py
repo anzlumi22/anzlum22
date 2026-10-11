@@ -286,7 +286,6 @@ class StopGiveawayView(discord.ui.View):
             )
             return
 
-        # 即座に終了して当選者を発表
         view.ended = True
         view.stop()
         await view.refresh()
@@ -309,6 +308,7 @@ class StopGiveawayView(discord.ui.View):
             pass
 
         self.cog.active_giveaways.pop(message_id, None)
+        self.cog.ended_giveaways[message_id] = view
 
         await interaction.response.edit_message(
             content=f"配布「{view.prize}」を終了しました。",
@@ -356,7 +356,6 @@ class RedrawGiveawayView(discord.ui.View):
             )
             return
 
-        # 再抽選（前回の当選者を除外したい場合はここで調整可能）
         chosen = random.sample(ids, min(view.winner_count, len(ids)))
         view.winners = chosen
 
@@ -1404,12 +1403,10 @@ class SlashCog(commands.Cog):
 
         self.active_giveaways[message.id] = view
 
-        # 自動終了タスク
         async def finish():
             try:
                 await asyncio.sleep(seconds)
 
-                # すでに手動終了している場合はスキップ
                 if view.ended:
                     return
 
