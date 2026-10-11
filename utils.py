@@ -141,7 +141,8 @@ async def is_authorized(interaction: discord.Interaction) -> bool:
     グローバルチェック用。
     - Botオーナー → 常に許可
     - /利用権限管理 → Botオーナーのみ許可
-    - それ以外 → 利用権限があれば許可
+    - サーバー管理者 → 許可
+    - 利用権限あり → 許可
     """
     # Botオーナーは常に許可
     try:
@@ -167,6 +168,14 @@ async def is_authorized(interaction: discord.Interaction) -> bool:
         except Exception:
             pass
         return False
+
+    # ===== サーバー管理者は許可 =====
+    try:
+        if interaction.guild and isinstance(interaction.user, discord.Member):
+            if interaction.user.guild_permissions.administrator:
+                return True
+    except Exception:
+        pass
 
     # 利用権限チェック
     if has_license_sync(interaction.user.id, interaction.guild_id):
