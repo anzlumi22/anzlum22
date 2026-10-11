@@ -5,109 +5,21 @@ import os
 import time
 
 from Cogs.vending import VENDING_DATA_FILE, load_json, save_json
-from utils import is_allowed
+from utils import (
+    check_license,
+    check_owner,
+    load_license_entries,
+    save_license_entries,
+    find_entry,
+    format_expires,
+    set_entry,
+    remove_entry,
+    extend_entry,
+    make_permanent,
+    WEEK_SECONDS,
+    MONTH_SECONDS,
+)
 
-
-# =========================================================
-# 利用権限データ操作ヘルパー
-# =========================================================
-
-WEEK_SECONDS = 7 * 24 * 60 * 60
-MONTH_SECONDS = 30 * 24 * 60 * 60
-
-
-def load_license_entries():
-    config = load_json(VENDING_DATA_FILE)
-    entries = config.get("license_entries", [])
-    if not isinstance(entries, list):
-        return []
-    normalized = []
-    for e in entries:
-        try:
-            normalized.append({
-                "user_id": int(e["user_id"]),
-                "guild_id": int(e["guild_id"]) if e.get("guild_id") is not None else None,
-                "expires_at": int(e["expires_at"]) if e.get("expires_at") is not None else None,
-            })
-        except (KeyError, TypeError, ValueError):
-            continue
-    return normalized
-
-
-def save_license_entries(entries):
-    config = load_json(VENDING_DATA_FILE)
-    config["license_entries"] = entries
-    save_json(VENDING_DATA_FILE, config)
-
-
-def find_entry(entries, user_id, guild_id):
-    for e in entries:
-        if e["user_id"] == user_id and e["guild_id"] == guild_id:
-            return e
-    return None
-
-
-def format_expires(expires_at):
-    if expires_at is None:
-        return "永久"
-    remaining = expires_at - int(time.time())
-    if remaining <= 0:
-        return "期限切れ"
-    days = remaining // 86400
-    hours = (remaining % 86400) // 3600
-    minutes = (remaining % 3600) // 60
-    if days > 0:
-        return f"{days}日 {hours}時間後"
-    if hours > 0:
-        return f"{hours}時間 {minutes}分後"
-    return f"{minutes}分後"
-
-
-def set_entry(entries, user_id, guild_id, expires_at):
-    """指定ユーザー × サーバーのエントリを追加/更新"""
-    e = find_entry(entries, user_id, guild_id)
-    if e:
-        e["expires_at"] = expires_at
-    else:
-        entries.append({
-            "user_id": user_id,
-            "guild_id": guild_id,
-            "expires_at": expires_at,
-        })
-
-
-def remove_entry(entries, user_id, guild_id):
-    """指定ユーザー × サーバーのエントリを削除。削除できたら True"""
-    before = len(entries)
-    entries[:] = [
-        e for e in entries
-        if not (e["user_id"] == user_id and e["guild_id"] == guild_id)
-    ]
-    return len(entries) != before
-
-
-def extend_entry(entries, user_id, guild_id, seconds):
-    """既存エントリの期限を延長。永久ならそのまま"""
-    e = find_entry(entries, user_id, guild_id)
-    if not e:
-        return False
-    if e["expires_at"] is None:
-        return True  # 永久は延長不要
-    e["expires_at"] += seconds
-    return True
-
-
-def make_permanent(entries, user_id, guild_id):
-    e = find_entry(entries, user_id, guild_id)
-    if not e:
-        return False
-    e["expires_at"] = None
-    return True
-
-
-# =========================================================
-# SettingCog
-# =========================================================
 
 class SettingCog(commands.Cog):
     def __init__(self, bot):
@@ -121,12 +33,14 @@ class SettingCog(commands.Cog):
         description="購入ログを送信するチャンネルを設定します"
     )
     @app_commands.describe(channel="ログチャンネル")
-    @is_allowed()
     async def set_log_channel(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel
     ):
+        if not await check_license(interaction):
+            return
+
         config = load_json(VENDING_DATA_FILE)
         config["log_channel_id"] = channel.id
         save_json(VENDING_DATA_FILE, config)
@@ -137,7 +51,7 @@ class SettingCog(commands.Cog):
         )
 
     # ==============================
-    # 利用権限管理
+    # 利用権限管理（Botオーナー限定）
     # ==============================
     @app_commands.command(
         name="利用権限管理",
@@ -166,6 +80,10 @@ class SettingCog(commands.Cog):
         user_id: str = None,
         guild_id: str = None
     ):
+        # Botオーナー限定
+        if not await check_owner(interaction):
+            return
+
         try:
             op = operation.value
 
@@ -242,7 +160,6 @@ class SettingCog(commands.Cog):
             # ---------- 剥奪 ----------
             if op == "revoke":
                 if target_guild_id is None:
-                    # 全サーバーから剥奪
                     before = len(entries)
                     entries[:] = [e for e in entries if e["user_id"] != target_user_id]
                     removed = before - len(entries)
@@ -274,11 +191,10 @@ class SettingCog(commands.Cog):
             elif op == "grant_1m":
                 expires_at = now + MONTH_SECONDS
             else:
-                expires_at = None  # 延長・永久化では使わない
+                expires_at = None
 
             if op in ("grant_perm", "grant_1w", "grant_1m"):
                 if target_guild_id is None:
-                    # 全サーバーに付与
                     set_entry(entries, target_user_id, None, expires_at)
                     save_license_entries(entries)
                     await interaction.response.send_message(
@@ -306,7 +222,6 @@ class SettingCog(commands.Cog):
                     seconds = MONTH_SECONDS
 
                 if target_guild_id is None:
-                    # 全エントリを延長
                     targets = [e for e in entries if e["user_id"] == target_user_id]
                     if not targets:
                         await interaction.response.send_message(
