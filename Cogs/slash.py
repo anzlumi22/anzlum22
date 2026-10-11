@@ -12,107 +12,14 @@ from discord.ext import commands
 
 
 # =========================================================
-# 権限チェック（許可ユーザーリスト：ユーザーID × サーバーID）
+# 権限チェック（ダミー）
 # =========================================================
-
-VENDING_DATA_FILE = "vending_data.json"
-
-
-def load_allowed_entries():
-    if not os.path.exists(VENDING_DATA_FILE):
-        return []
-
-    try:
-        with open(VENDING_DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-
-    entries = []
-
-    for entry in data.get("allowed_entries", []):
-        try:
-            entries.append({
-                "user_id": int(entry["user_id"]),
-                "guild_id": int(entry["guild_id"])
-            })
-        except (KeyError, TypeError, ValueError):
-            continue
-
-    for uid in data.get("allowed_user_ids", []):
-        try:
-            entries.append({
-                "user_id": int(uid),
-                "guild_id": None
-            })
-        except (TypeError, ValueError):
-            continue
-
-    return entries
-
-
-def save_allowed_entries(entries):
-    with open(VENDING_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(
-            {"allowed_entries": entries},
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-
-def add_allowed_entry(user_id: int, guild_id: int) -> bool:
-    entries = load_allowed_entries()
-
-    for e in entries:
-        if e["user_id"] == user_id and e["guild_id"] == guild_id:
-            return False
-
-    entries.append({"user_id": user_id, "guild_id": guild_id})
-    save_allowed_entries(entries)
-    return True
-
-
-def remove_allowed_entry(user_id: int, guild_id: int) -> bool:
-    entries = load_allowed_entries()
-    new_entries = [
-        e for e in entries
-        if not (e["user_id"] == user_id and e["guild_id"] == guild_id)
-    ]
-
-    if len(new_entries) == len(entries):
-        return False
-
-    save_allowed_entries(new_entries)
-    return True
-
-
-def is_allowed_now(user_id: int, guild_id):
-    for e in load_allowed_entries():
-        if e["user_id"] != user_id:
-            continue
-
-        if e["guild_id"] is None:
-            return True
-
-        if guild_id is not None and e["guild_id"] == guild_id:
-            return True
-
-    return False
-
+# 元の許可ユーザーリスト機能（ユーザーID × サーバーID）は削除しました。
+# ただし import discord.py 側で `from utils import is_allowed` を
+# 参照しているため、互換用に「常に許可する」ダミーを残しています。
 
 def is_allowed():
     async def predicate(interaction: discord.Interaction) -> bool:
-        if await interaction.client.is_owner(interaction.user):
-            return True
-
-        if not is_allowed_now(interaction.user.id, interaction.guild_id):
-            await interaction.response.send_message(
-                "🚫 あなたはこのBotの機能を利用する権限がありません。",
-                ephemeral=True
-            )
-            return False
-
         return True
     return app_commands.check(predicate)
 
@@ -1471,7 +1378,6 @@ class SlashCog(commands.Cog):
         name="nuke",
         description="現在のテキストチャンネルを再作成します"
     )
-    @is_allowed()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def nuke(self, interaction):
         if not isinstance(interaction.channel, discord.TextChannel):
@@ -1495,7 +1401,6 @@ class SlashCog(commands.Cog):
         name="giveaway",
         description="景品の抽選を作成します（開始は /giveaway-start）"
     )
-    @is_allowed()
     @app_commands.describe(
         prize="景品名",
         winners="当選人数"
@@ -1541,7 +1446,6 @@ class SlashCog(commands.Cog):
         name="giveaway-start",
         description="待機中の抽選を選択して開始します"
     )
-    @is_allowed()
     @app_commands.describe(
         duration="例: 30m、1h、1d、1week"
     )
@@ -1596,7 +1500,6 @@ class SlashCog(commands.Cog):
         name="giveaway-stop",
         description="進行中または待機中の抽選を選択して中止します"
     )
-    @is_allowed()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway_stop(self, interaction):
         guild_giveaways = {}
@@ -1645,7 +1548,6 @@ class SlashCog(commands.Cog):
         name="embed",
         description="埋め込みメッセージを送信します"
     )
-    @is_allowed()
     @app_commands.describe(
         title="埋め込みのタイトル",
         description="埋め込みの説明",
@@ -1695,7 +1597,6 @@ class SlashCog(commands.Cog):
         name="dm-anc",
         description="指定したユーザーにDMを送信します"
     )
-    @is_allowed()
     @app_commands.describe(
         user="送信先のユーザー",
         message="送信するメッセージ"
@@ -1735,7 +1636,6 @@ class SlashCog(commands.Cog):
         name="verify",
         description="認証パネルを作成します"
     )
-    @is_allowed()
     @app_commands.describe(
         type="認証方法（計算認証 or ボタン認証）",
         title="パネルのタイトル（任意）",
@@ -1829,7 +1729,6 @@ class SlashCog(commands.Cog):
         name="vouch-panel",
         description="実績送信パネルを作成します"
     )
-    @is_allowed()
     @app_commands.describe(
         destination="実績を送信するチャンネル",
         title="パネルタイトル",
@@ -1881,7 +1780,6 @@ class SlashCog(commands.Cog):
         name="status",
         description="対応状況パネルを作成します"
     )
-    @is_allowed()
     @app_commands.describe(
         description="パネル説明",
         status="最初の対応状況",
@@ -1952,7 +1850,6 @@ class SlashCog(commands.Cog):
         name="ticket",
         description="チケットパネルを作成します"
     )
-    @is_allowed()
     @app_commands.describe(
         button_label="ボタンの名前",
         max_tickets="1人が作成できるチケット数",
@@ -2029,7 +1926,6 @@ class SlashCog(commands.Cog):
         name="ticket-edit",
         description="チケットパネルを編集します"
     )
-    @is_allowed()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ticket_edit(self, interaction):
         guild_panels = {
