@@ -6,8 +6,6 @@ import time
 
 from Cogs.vending import VENDING_DATA_FILE, load_json, save_json
 from utils import (
-    check_license,
-    check_owner,
     load_license_entries,
     save_license_entries,
     find_entry,
@@ -38,9 +36,7 @@ class SettingCog(commands.Cog):
         interaction: discord.Interaction,
         channel: discord.TextChannel
     ):
-        if not await check_license(interaction):
-            return
-
+        # グローバルチェックで守られているのでここでは何もしなくてOK
         config = load_json(VENDING_DATA_FILE)
         config["log_channel_id"] = channel.id
         save_json(VENDING_DATA_FILE, config)
@@ -80,10 +76,7 @@ class SettingCog(commands.Cog):
         user_id: str = None,
         guild_id: str = None
     ):
-        # Botオーナー限定
-        if not await check_owner(interaction):
-            return
-
+        # グローバルチェックでBotオーナー限定は保証済み
         try:
             op = operation.value
 
