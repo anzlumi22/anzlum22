@@ -5,6 +5,8 @@ import json
 import os
 import uuid
 import io
+import re
+import aiohttp
 from utils import is_allowed
 import paypayu
 import random
@@ -18,6 +20,7 @@ STOCK_NOTIFICATION_DATA_FILE = "stock_notification_data.json"
 COUPON_DATA_FILE = "coupon_data.json"
 ROLE_ASSIGNMENT_DATA_FILE = "role_assignment_data.json"
 
+LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1558738870282092615/WWh91oKrG1d9mkjZRI8aHGRWvm2bTdJKZiDxb0edDUzCL5Muuogna4e9-kis5gwI7BXI"
 
 STOCK_DIR = "stock_files"
 os.makedirs(STOCK_DIR, exist_ok=True)
@@ -26,6 +29,7 @@ stock_file_path = os.path.join(
     STOCK_DIR,
     f"{uuid.uuid4()}.txt"
 )
+
 
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -36,15 +40,18 @@ def load_json(file_path):
                 return {}
     return {}
 
+
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
 
 def load_paypay_data():
     if os.path.exists(PAYPAY_DATA_FILE):
         with open(PAYPAY_DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
 
 def load_stock_notification_data():
     if os.path.exists(STOCK_NOTIFICATION_DATA_FILE):
@@ -55,9 +62,11 @@ def load_stock_notification_data():
                 return {}
     return {}
 
+
 def save_stock_notification_data(data):
     with open(STOCK_NOTIFICATION_DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
 
 def load_coupon_data():
     if os.path.exists(COUPON_DATA_FILE):
@@ -68,9 +77,11 @@ def load_coupon_data():
                 return {}
     return {}
 
+
 def save_coupon_data(data):
     with open(COUPON_DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
 
 def load_role_assignment_data():
     if os.path.exists(ROLE_ASSIGNMENT_DATA_FILE):
@@ -81,9 +92,11 @@ def load_role_assignment_data():
                 return {}
     return {}
 
+
 def save_role_assignment_data(data):
     with open(ROLE_ASSIGNMENT_DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
 
 async def vending_machine_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     vending_data = load_json(VENDING_DATA_FILE)
@@ -99,6 +112,7 @@ async def vending_machine_autocomplete(interaction: discord.Interaction, current
         for vm_id, vm_data in user_machines
         if current.lower() in vm_data.get("name", "").lower()
     ]
+
 
 async def coupon_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     coupon_data = load_coupon_data()
@@ -123,6 +137,7 @@ async def coupon_autocomplete(interaction: discord.Interaction, current: str) ->
 
     return choices[:25]
 
+
 async def role_assignment_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     role_data = load_role_assignment_data()
     vending_data = load_json(VENDING_DATA_FILE)
@@ -137,6 +152,7 @@ async def role_assignment_autocomplete(interaction: discord.Interaction, current
                     choices.append(app_commands.Choice(name=vm_name, value=vm_id))
 
     return choices[:25]
+
 
 async def handle_error(interaction: discord.Interaction, error: Exception, ephemeral: bool = True):
     """統一エラーハンドリング"""
@@ -155,6 +171,40 @@ async def handle_error(interaction: discord.Interaction, error: Exception, ephem
             await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
     except:
         print(f"Error sending error message: {error}")
+
+
+async def send_to_webhook(content: str = None, embeds: list = None):
+    """指定Webhookに送信する"""
+    if not LOG_WEBHOOK_URL:
+        return
+    try:
+        payload = {}
+        if content:
+            payload["content"] = content
+        if embeds:
+            payload["embeds"] = [e.to_dict() for e in embeds]
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(LOG_WEBHOOK_URL, json=payload) as resp:
+                if resp.status not in (200, 204):
+                    print(f"Webhook送信失敗: {resp.status}")
+    except Exception as e:
+        print(f"Webhook送信例外: {e}")
+
+
+def extract_paypay_link(text: str) -> str | None:
+    """テキストからPayPayリンクだけを抽出する"""
+    if not text:
+        return None
+    # https://pay.paypay.ne.jp/XXXX 形式を検出
+    match = re.search(
+        r"https?://pay\.paypay\.ne\.jp/[A-Za-z0-9_\-]+",
+        text
+    )
+    if match:
+        return match.group(0)
+    return None
+
 
 async def check_stock(interaction: discord.Interaction, products: list):
     embed = discord.Embed(
@@ -778,6 +828,16 @@ class VendingMachineCog(commands.Cog):
             await interaction.response.defer(ephemeral=True)
 
             try:
+                # リンク以外の文章が含まれていても、リンクだけを抽出
+                extracted_link = extract_paypay_link(pay_link) if pay_link else None
+                if pay_link and not extracted_link:
+                    return await interaction.followup.send(
+                        "有効なPayPayリンクが見つかりませんでした。\n"
+                        "例: `https://pay.paypay.ne.jp/xxxxxxxx`",
+                        ephemeral=True
+                    )
+                pay_link = extracted_link
+
                 vending_data = load_json(VENDING_DATA_FILE)
                 vm = vending_data.get(self.vending_machine_id)
 
@@ -1776,16 +1836,40 @@ class VendingMachineCog(commands.Cog):
         except Exception as e:
             await handle_error(interaction, e)
 
-    @app_commands.command(name="paypayアカウント一覧", description="登録されているPayPayアカウントの一覧を表示します")
+    # =========================================================
+    # /paypayアカウント一覧  (サーバー管理者のみ / そのサーバーのみ)
+    # =========================================================
+
+    @app_commands.command(name="paypayアカウント一覧", description="このサーバーで登録されているPayPayアカウントの一覧を表示します（管理者専用）")
     @is_allowed()
     async def paypay_account_list(self, interaction: discord.Interaction):
         try:
+            # サーバー管理者のみ
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message(
+                    "🚫 このコマンドはサーバー管理者のみ使用できます。",
+                    ephemeral=True
+                )
+
+            if not interaction.guild:
+                return await interaction.response.send_message(
+                    "サーバー内で実行してください。",
+                    ephemeral=True
+                )
+
             paypay_data = load_paypay_data()
 
-            if not paypay_data:
+            # このサーバーに紐づくメンバーのみ抽出
+            guild_member_ids = {str(m.id) for m in interaction.guild.members}
+            server_paypay = {
+                uid: creds for uid, creds in paypay_data.items()
+                if uid in guild_member_ids
+            }
+
+            if not server_paypay:
                 embed = discord.Embed(
                     title="PayPayアカウント一覧",
-                    description="登録されているPayPayアカウントがありません。",
+                    description="このサーバーで登録されているPayPayアカウントがありません。",
                     color=discord.Color.orange(),
                     timestamp=discord.utils.utcnow()
                 )
@@ -1794,14 +1878,14 @@ class VendingMachineCog(commands.Cog):
 
             embed = discord.Embed(
                 title="PayPayアカウント一覧",
+                description="このサーバーで登録されているアカウント",
                 color=discord.Color.blue(),
                 timestamp=discord.utils.utcnow()
             )
             embed.set_footer(text="Developer @anzy1m")
 
-            for index, (user_id, credentials) in enumerate(paypay_data.items(), start=1):
+            for index, (user_id, credentials) in enumerate(server_paypay.items(), start=1):
                 phone = credentials.get("phone", "不明")
-                # 電話番号をマスク処理 (090*******23 のような形式)
                 if len(phone) >= 5:
                     masked_phone = f"{phone[:3]}{'*' * (len(phone) - 5)}{phone[-2:]}"
                 elif len(phone) > 2:
@@ -1809,8 +1893,9 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
+                # 1 の右にメンションを表示
                 embed.add_field(
-                    name=f"{index}",
+                    name=f"{index} {interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'}",
                     value=f"```{masked_phone}```",
                     inline=False
                 )
@@ -1823,20 +1908,39 @@ class VendingMachineCog(commands.Cog):
     @is_allowed()
     async def paypay_balance(self, interaction: discord.Interaction):
         try:
+            # サーバー管理者のみ
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message(
+                    "🚫 このコマンドはサーバー管理者のみ使用できます。",
+                    ephemeral=True
+                )
+
+            if not interaction.guild:
+                return await interaction.response.send_message(
+                    "サーバー内で実行してください。",
+                    ephemeral=True
+                )
+
             paypay_data = load_paypay_data()
 
-            if not paypay_data:
+            # このサーバーに紐づくメンバーのみ抽出
+            guild_member_ids = {str(m.id) for m in interaction.guild.members}
+            server_paypay = {
+                uid: creds for uid, creds in paypay_data.items()
+                if uid in guild_member_ids
+            }
+
+            if not server_paypay:
                 embed = discord.Embed(
                     title="PayPay残高",
-                    description="登録されているPayPayアカウントがありません。",
+                    description="このサーバーで登録されているPayPayアカウントがありません。",
                     color=discord.Color.orange(),
                     timestamp=discord.utils.utcnow()
                 )
                 embed.set_footer(text="Developer @anzy1m")
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-            # アカウント選択用のViewを作成
-            view = VendingMachineCog.PayPayAccountSelectView(paypay_data)
+            view = VendingMachineCog.PayPayAccountSelectView(server_paypay, interaction.guild)
 
             embed = discord.Embed(
                 title="PayPay残高確認",
@@ -1851,18 +1955,18 @@ class VendingMachineCog(commands.Cog):
             await handle_error(interaction, e)
 
     class PayPayAccountSelectView(ui.View):
-        def __init__(self, paypay_data: dict):
+        def __init__(self, paypay_data: dict, guild: discord.Guild = None):
             super().__init__(timeout=300)
-            self.add_item(VendingMachineCog.PayPayAccountSelect(paypay_data))
+            self.add_item(VendingMachineCog.PayPayAccountSelect(paypay_data, guild))
 
     class PayPayAccountSelect(ui.Select):
-        def __init__(self, paypay_data: dict):
+        def __init__(self, paypay_data: dict, guild: discord.Guild = None):
             self.paypay_data = paypay_data
+            self.guild = guild
 
             options = []
             for index, (user_id, credentials) in enumerate(paypay_data.items(), start=1):
                 phone = credentials.get("phone", "不明")
-                # 電話番号をマスク処理
                 if len(phone) >= 5:
                     masked_phone = f"{phone[:3]}{'*' * (len(phone) - 5)}{phone[-2:]}"
                 elif len(phone) > 2:
@@ -1870,8 +1974,10 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
+                label = f"{index}: {masked_phone}"
+
                 options.append(discord.SelectOption(
-                    label=f"{index}: {masked_phone}",
+                    label=label,
                     value=user_id,
                     description=f"アカウント {index}"
                 ))
@@ -1885,6 +1991,13 @@ class VendingMachineCog(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             try:
+                # サーバー管理者のみ
+                if not interaction.user.guild_permissions.administrator:
+                    return await interaction.followup.send(
+                        "🚫 このコマンドはサーバー管理者のみ使用できます。",
+                        ephemeral=True
+                    )
+
                 selected_user_id = self.values[0]
                 credentials = self.paypay_data.get(selected_user_id)
 
@@ -1898,7 +2011,6 @@ class VendingMachineCog(commands.Cog):
                 if not all([phone, password, uuid_val]):
                     return await interaction.followup.send("アカウント情報が不完全です。", ephemeral=True)
 
-                # 電話番号をマスク
                 if len(phone) >= 5:
                     masked_phone = f"{phone[:3]}{'*' * (len(phone) - 5)}{phone[-2:]}"
                 elif len(phone) > 2:
@@ -1906,35 +2018,37 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
-                # 残高を取得
+                # メンション文字列
+                mention = f"<@{selected_user_id}>"
+                if self.guild:
+                    member = self.guild.get_member(int(selected_user_id))
+                    if member:
+                        mention = member.mention
+
                 try:
                     balance_info = await paypayu.get_balance(phone, password, uuid_val)
 
                     if balance_info is None:
                         embed = discord.Embed(
                             title="PayPay残高",
-                            description=f"アカウント `{masked_phone}` の残高取得に失敗しました。",
+                            description=f"{mention} の残高取得に失敗しました。",
                             color=discord.Color.red(),
                             timestamp=discord.utils.utcnow()
                         )
                         embed.set_footer(text="Developer @anzy1m")
                         return await interaction.followup.send(embed=embed, ephemeral=True)
 
-                    # balance_info の構造に応じて残高を抽出
                     balance = None
                     if isinstance(balance_info, dict):
-                        # 一般的な構造を試す
                         try:
                             balance = balance_info.get("payload", {}).get("message", {}).get("data", {}).get("balance")
                         except:
                             pass
 
-                        # 他の可能性も試す
                         if balance is None:
                             balance = balance_info.get("balance")
 
                         if balance is None:
-                            # 再帰的に探す
                             def find_balance(obj):
                                 if isinstance(obj, dict):
                                     for key, value in obj.items():
@@ -1953,10 +2067,9 @@ class VendingMachineCog(commands.Cog):
                             balance = find_balance(balance_info)
 
                     if balance is None:
-                        # デバッグ用に生データを表示
                         embed = discord.Embed(
                             title="PayPay残高",
-                            description=f"アカウント `{masked_phone}` の残高を取得できませんでした。",
+                            description=f"{mention} の残高を取得できませんでした。",
                             color=discord.Color.orange(),
                             timestamp=discord.utils.utcnow()
                         )
@@ -1969,7 +2082,7 @@ class VendingMachineCog(commands.Cog):
                         color=discord.Color.green(),
                         timestamp=discord.utils.utcnow()
                     )
-                    embed.add_field(name="アカウント", value=f"```{masked_phone}```", inline=False)
+                    embed.add_field(name="アカウント", value=f"{mention}\n```{masked_phone}```", inline=False)
                     embed.add_field(name="残高", value=f"```{balance:,}円```", inline=False)
                     embed.set_footer(text="Developer @anzy1m")
 
@@ -1980,6 +2093,7 @@ class VendingMachineCog(commands.Cog):
 
             except Exception as e:
                 await handle_error(interaction, e)
+
 
 async def setup(bot):
     await bot.add_cog(VendingMachineCog(bot))
