@@ -613,6 +613,7 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
+        # 既存チケット数チェック
         user_tickets = [
             ch for ch in interaction.guild.channels
             if isinstance(ch, discord.TextChannel)
@@ -625,18 +626,81 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
-        category = interaction.guild.get_channel(panel["category_id"])
-        if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message(
-                "カテゴリーが見つかりません。",
-                ephemeral=True
-            )
-            return
+        # 要件選択ビューを表示
+        view = TicketRequirementSelectView(self.cog, self.panel_id, panel)
+        await interaction.response.send_message(
+            "要件を選択してください。",
+            view=view,
+            ephemeral=True
+        )
 
+
+# =========================================================
+# TICKET REQUIREMENT SELECT (2段階フロー)
+# =========================================================
+
+class TicketRequirementSelectView(discord.ui.View):
+    def __init__(self, cog, panel_id, panel):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel = panel
+
+        requirements = panel.get("requirements") or ["その他"]
+
+        options = [
+            discord.SelectOption(label=r[:100], value=r)
+            for r in requirements[:25]
+        ]
+
+        self.select.options = options
+
+    @discord.ui.select(
+        placeholder="要件を選択してください",
+        options=[],
+        custom_id="ticket_requirement_select"
+    )
+    async def select(self, interaction, select):
+        requirement = select.values[0]
+
+        # モーダルで詳細入力
+        modal = TicketDetailModal(
+            self.cog, self.panel_id, self.panel, requirement
+        )
+        await interaction.response.send_modal(modal)
+
+
+class TicketDetailModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id, panel, requirement):
+        super().__init__(title="チケット詳細")
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel = panel
+        self.requirement = requirement
+
+        self.detail_input = discord.ui.TextInput(
+            label="詳細（任意）",
+            placeholder="要件の詳細を入力してください",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500
+        )
+        self.add_item(self.detail_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        channel_name = f"ticket-{interaction.user.name}"[:100]
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel or not interaction.guild:
+            return await interaction.followup.send("パネルが見つかりません。", ephemeral=True)
 
+        detail = self.detail_input.value.strip() if self.detail_input.value else ""
+
+        category = interaction.guild.get_channel(panel["category_id"])
+        if not isinstance(category, discord.CategoryChannel):
+            return await interaction.followup.send("カテゴリーが見つかりません。", ephemeral=True)
+
+        # ===== 権限設定 =====
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(
                 view_channel=False
@@ -654,6 +718,7 @@ class TicketPanelView(discord.ui.View):
             )
         }
 
+        # 対応ロール（メンション + フル権限）
         mention_role_id = panel.get("mention_role_id")
         if mention_role_id:
             role = interaction.guild.get_role(mention_role_id)
@@ -664,6 +729,47 @@ class TicketPanelView(discord.ui.View):
                     read_message_history=True
                 )
 
+        # 見るロール（閲覧のみ）
+        for rid in panel.get("viewer_role_ids", []):
+            role = interaction.guild.get_role(rid)
+            if role:
+                ow = overwrites.get(role) or discord.PermissionOverwrite()
+                ow.view_channel = True
+                ow.read_message_history = True
+                overwrites[role] = ow
+
+        # 送信ロール（閲覧 + 送信）
+        for rid in panel.get("sender_role_ids", []):
+            role = interaction.guild.get_role(rid)
+            if role:
+                ow = overwrites.get(role) or discord.PermissionOverwrite()
+                ow.view_channel = True
+                ow.send_messages = True
+                ow.read_message_history = True
+                overwrites[role] = ow
+
+        # 見る人（閲覧のみ）
+        for uid in panel.get("viewer_user_ids", []):
+            member = interaction.guild.get_member(uid)
+            if member:
+                ow = overwrites.get(member) or discord.PermissionOverwrite()
+                ow.view_channel = True
+                ow.read_message_history = True
+                overwrites[member] = ow
+
+        # 送信する人（閲覧 + 送信）
+        for uid in panel.get("sender_user_ids", []):
+            member = interaction.guild.get_member(uid)
+            if member:
+                ow = overwrites.get(member) or discord.PermissionOverwrite()
+                ow.view_channel = True
+                ow.send_messages = True
+                ow.read_message_history = True
+                overwrites[member] = ow
+
+        # ===== チャンネル作成 =====
+        channel_name = f"ticket-{interaction.user.name}"[:100]
+
         try:
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
@@ -672,12 +778,12 @@ class TicketPanelView(discord.ui.View):
                 topic=f"ticket_owner:{interaction.user.id}:panel:{self.panel_id}"
             )
         except discord.HTTPException as error:
-            await interaction.followup.send(
+            return await interaction.followup.send(
                 f"チケットの作成に失敗しました: {error}",
                 ephemeral=True
             )
-            return
 
+        # ===== 埋め込み =====
         embed = discord.Embed(
             title=panel.get("embed_title") or "チケット",
             description=panel.get("embed_description") or "サポートします。",
@@ -685,6 +791,25 @@ class TicketPanelView(discord.ui.View):
         )
         if panel.get("embed_image"):
             embed.set_image(url=panel["embed_image"])
+
+        embed.add_field(
+            name="要件",
+            value=f"```{self.requirement}```",
+            inline=False
+        )
+
+        if detail:
+            embed.add_field(
+                name="詳細",
+                value=f"```{detail}```",
+                inline=False
+            )
+
+        embed.add_field(
+            name="作成者",
+            value=interaction.user.mention,
+            inline=False
+        )
 
         mention_text = interaction.user.mention
         if mention_role_id:
@@ -1838,6 +1963,11 @@ class SlashCog(commands.Cog):
         mention_role="チケット作成時にメンションするロール",
         category="チケットを作成するカテゴリー",
         delete_permission="削除権限（管理者 or 全員）",
+        requirements="要件のリスト（カンマ区切り・例: 購入希望,サポート,質問）",
+        viewer_roles="チケットを閲覧できるロール（カンマ区切り）",
+        viewer_users="チケットを閲覧できる人（メンション・カンマ区切り）",
+        sender_roles="メッセージ送信できるロール（カンマ区切り）",
+        sender_users="メッセージ送信できる人（メンション・カンマ区切り）",
         embed_title="埋め込みタイトル（任意）",
         embed_description="埋め込み説明（任意）",
         embed_image="埋め込み画像URL（任意）",
@@ -1859,6 +1989,11 @@ class SlashCog(commands.Cog):
         mention_role: discord.Role,
         category: discord.CategoryChannel,
         delete_permission: app_commands.Choice[str],
+        requirements: str = "購入希望,サポート,質問,その他",
+        viewer_roles: str = None,
+        viewer_users: str = None,
+        sender_roles: str = None,
+        sender_users: str = None,
         embed_title: str = None,
         embed_description: str = None,
         embed_image: str = None,
@@ -1866,6 +2001,44 @@ class SlashCog(commands.Cog):
         archive_channel: discord.TextChannel = None
     ):
         panel_id = uuid.uuid4().hex[:10]
+
+        # 要件リストをパース
+        requirement_list = [
+            r.strip() for r in requirements.split(",") if r.strip()
+        ]
+        if not requirement_list:
+            requirement_list = ["その他"]
+
+        # ロール/ユーザーのパース
+        def parse_role_ids(text):
+            if not text:
+                return []
+            ids = []
+            for token in text.split(","):
+                token = token.strip()
+                if token.startswith("<@&") and token.endswith(">"):
+                    try:
+                        ids.append(int(token[3:-1]))
+                    except ValueError:
+                        pass
+                elif token.isdigit():
+                    ids.append(int(token))
+            return ids
+
+        def parse_user_ids(text):
+            if not text:
+                return []
+            ids = []
+            for token in text.split(","):
+                token = token.strip()
+                if token.startswith("<@") and token.endswith(">"):
+                    try:
+                        ids.append(int(token[2:-1]))
+                    except ValueError:
+                        pass
+                elif token.isdigit():
+                    ids.append(int(token))
+            return ids
 
         self.ticket_panels[panel_id] = {
             "id": panel_id,
@@ -1880,7 +2053,12 @@ class SlashCog(commands.Cog):
             "category_id": category.id,
             "archive_channel_id": archive_channel.id if archive_channel else None,
             "channel_id": interaction.channel.id,
-            "message_id": None
+            "message_id": None,
+            "requirements": requirement_list,
+            "viewer_role_ids": parse_role_ids(viewer_roles),
+            "viewer_user_ids": parse_user_ids(viewer_users),
+            "sender_role_ids": parse_role_ids(sender_roles),
+            "sender_user_ids": parse_user_ids(sender_users),
         }
 
         embed = discord.Embed(
