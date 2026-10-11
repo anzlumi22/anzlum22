@@ -118,24 +118,13 @@ def make_permanent(entries, user_id, guild_id):
 
 
 # =========================================================
-# 利用権限チェック
+# 利用権限チェック（同期版・グローバルチェックから呼ぶ用）
 # =========================================================
 
-async def check_license(interaction: discord.Interaction) -> bool:
-    """利用権限チェック（Botオーナー or license_entries に登録済み）"""
-    try:
-        if await interaction.client.is_owner(interaction.user):
-            return True
-    except Exception:
-        pass
-
-    user_id = interaction.user.id
-    guild_id = interaction.guild_id
+def has_license_sync(user_id: int, guild_id) -> bool:
+    """純粋な同期チェック。Discordオブジェクト不要。"""
     now = int(time.time())
-
-    entries = load_license_entries()
-
-    for e in entries:
+    for e in load_license_entries():
         if e["user_id"] != user_id:
             continue
         if e["guild_id"] is not None and e["guild_id"] != guild_id:
@@ -144,7 +133,46 @@ async def check_license(interaction: discord.Interaction) -> bool:
             return True
         if e["expires_at"] > now:
             return True
+    return False
 
+
+async def is_authorized(interaction: discord.Interaction) -> bool:
+    """
+    グローバルチェック用。
+    - Botオーナー → 常に許可
+    - /利用権限管理 → Botオーナーのみ許可
+    - それ以外 → 利用権限があれば許可
+    """
+    # Botオーナーは常に許可
+    try:
+        if await interaction.client.is_owner(interaction.user):
+            return True
+    except Exception:
+        pass
+
+    # /利用権限管理 は Botオーナー以外は拒否
+    if interaction.command and interaction.command.name == "利用権限管理":
+        try:
+            embed = discord.Embed(
+                title="🚫 権限がありません",
+                description="このコマンドはBotオーナーのみ使用できます。",
+                color=discord.Color.red()
+            )
+            embed.set_footer(text="Developer @anzy1m")
+
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            pass
+        return False
+
+    # 利用権限チェック
+    if has_license_sync(interaction.user.id, interaction.guild_id):
+        return True
+
+    # 拒否
     try:
         embed = discord.Embed(
             title="🚫 利用権限がありません",
@@ -152,32 +180,6 @@ async def check_license(interaction: discord.Interaction) -> bool:
                 "このコマンドを実行するには利用権限が必要です。\n"
                 "管理者に `/利用権限管理` での付与を依頼してください。"
             ),
-            color=discord.Color.red()
-        )
-        embed.set_footer(text="Developer @anzy1m")
-
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-    except Exception:
-        pass
-
-    return False
-
-
-async def check_owner(interaction: discord.Interaction) -> bool:
-    """Botオーナー限定チェック"""
-    try:
-        if await interaction.client.is_owner(interaction.user):
-            return True
-    except Exception:
-        pass
-
-    try:
-        embed = discord.Embed(
-            title="🚫 権限がありません",
-            description="このコマンドはBotオーナーのみ使用できます。",
             color=discord.Color.red()
         )
         embed.set_footer(text="Developer @anzy1m")
