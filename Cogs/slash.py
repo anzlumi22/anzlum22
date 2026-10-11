@@ -14,9 +14,6 @@ from discord.ext import commands
 # =========================================================
 # 権限チェック（ダミー）
 # =========================================================
-# 元の許可ユーザーリスト機能（ユーザーID × サーバーID）は削除しました。
-# ただし import discord.py 側で `from utils import is_allowed` を
-# 参照しているため、互換用に「常に許可する」ダミーを残しています。
 
 def is_allowed():
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -150,18 +147,19 @@ class ConfirmNukeView(discord.ui.View):
 # =========================================================
 
 class GiveawayView(discord.ui.View):
-    def __init__(self, cog, giveaway_id, prize, winner_count):
+    def __init__(self, cog, giveaway_id, prize, winner_count, end_time):
         super().__init__(timeout=None)
         self.cog = cog
         self.giveaway_id = giveaway_id
         self.prize = prize
         self.winner_count = winner_count
-        self.end_time = None
+        self.end_time = end_time
         self.participants = set()
-        self.started = False
+        self.started = True
         self.ended = False
         self.cancelled = False
         self.message = None
+        self.winners = []
 
         self.join_button.custom_id = f"gw_join_{giveaway_id}"
         self.list_button.custom_id = f"gw_list_{giveaway_id}"
@@ -173,9 +171,6 @@ class GiveawayView(discord.ui.View):
         elif self.ended:
             color = discord.Color.dark_grey()
             state = "終了"
-        elif not self.started:
-            color = discord.Color.light_grey()
-            state = "待機中"
         else:
             color = discord.Color.gold()
             state = "開催中"
@@ -211,13 +206,6 @@ class GiveawayView(discord.ui.View):
         custom_id="gw_join_default"
     )
     async def join_button(self, interaction, button):
-        if not self.started:
-            await interaction.response.send_message(
-                "この抽選はまだ開始されていません。",
-                ephemeral=True
-            )
-            return
-
         if self.ended or self.cancelled:
             await interaction.response.send_message(
                 "この抽選は終了しています。",
@@ -267,94 +255,7 @@ class GiveawayView(discord.ui.View):
 
 
 # =========================================================
-# GIVEAWAY START
-# =========================================================
-
-class StartGiveawayView(discord.ui.View):
-    def __init__(self, cog, options, duration):
-        super().__init__(timeout=60)
-        self.cog = cog
-        self.duration = duration
-        self.select.options = options
-
-    @discord.ui.select(
-        placeholder="開始する抽選を選択",
-        custom_id="giveaway_start_select"
-    )
-    async def select(self, interaction, select):
-        message_id = int(select.values[0])
-        view = self.cog.pending_giveaways.get(message_id)
-
-        if not view:
-            await interaction.response.edit_message(
-                content="抽選が見つかりません。既に開始または中止されている可能性があります。",
-                view=None
-            )
-            return
-
-        if interaction.guild_id != view.message.guild.id:
-            await interaction.response.edit_message(
-                content="このサーバーの抽選ではありません。",
-                view=None
-            )
-            return
-
-        try:
-            seconds = parse_duration(self.duration)
-        except ValueError as error:
-            await interaction.response.edit_message(
-                content=f"期間の指定が不正です: {error}",
-                view=None
-            )
-            return
-
-        view.started = True
-        view.end_time = int(time.time() + seconds)
-        await view.refresh()
-
-        self.cog.pending_giveaways.pop(message_id, None)
-        self.cog.active_giveaways[message_id] = view
-
-        async def finish():
-            try:
-                await asyncio.sleep(seconds)
-
-                if view.cancelled:
-                    return
-
-                view.ended = True
-                await view.refresh()
-
-                ids = list(view.participants)
-                if ids:
-                    chosen = random.sample(ids, min(view.winner_count, len(ids)))
-                    result = (
-                        f"🎉 **{view.prize}** の抽選が終了しました！\n"
-                        f"当選者: {' '.join(f'<@{uid}>' for uid in chosen)}"
-                    )
-                else:
-                    result = f"**{view.prize}** の抽選が終了しました。参加者はいませんでした。"
-
-                await view.message.channel.send(result)
-
-            except asyncio.CancelledError:
-                pass
-            except discord.HTTPException:
-                pass
-            finally:
-                self.cog.active_giveaways.pop(message_id, None)
-                self.cog.giveaway_tasks.pop(message_id, None)
-
-        self.cog.giveaway_tasks[message_id] = asyncio.create_task(finish())
-
-        await interaction.response.edit_message(
-            content=f"抽選「{view.prize}」を開始しました。期間: {self.duration}",
-            view=None
-        )
-
-
-# =========================================================
-# GIVEAWAY STOP
+# GIVEAWAY STOP (配布終了)
 # =========================================================
 
 class StopGiveawayView(discord.ui.View):
@@ -364,49 +265,113 @@ class StopGiveawayView(discord.ui.View):
         self.select.options = options
 
     @discord.ui.select(
-        placeholder="中止する抽選を選択",
+        placeholder="終了する配布を選択",
         custom_id="giveaway_stop_select"
     )
     async def select(self, interaction, select):
         message_id = int(select.values[0])
         view = self.cog.active_giveaways.get(message_id)
-        pending = False
-
-        if not view:
-            view = self.cog.pending_giveaways.get(message_id)
-            pending = True
 
         if not view:
             await interaction.response.edit_message(
-                content="抽選が見つかりません。既に終了している可能性があります。",
+                content="配布が見つかりません。既に終了している可能性があります。",
                 view=None
             )
             return
 
         if interaction.guild_id != view.message.guild.id:
             await interaction.response.edit_message(
-                content="このサーバーの抽選ではありません。",
+                content="このサーバーの配布ではありません。",
                 view=None
             )
             return
 
-        view.cancelled = True
+        # 即座に終了して当選者を発表
+        view.ended = True
         view.stop()
-
-        task = self.cog.giveaway_tasks.get(message_id)
-        if task:
-            task.cancel()
-
         await view.refresh()
 
-        if pending:
-            self.cog.pending_giveaways.pop(message_id, None)
+        ids = list(view.participants)
+        if ids:
+            chosen = random.sample(ids, min(view.winner_count, len(ids)))
+            view.winners = chosen
+            result = (
+                f"🎉 **{view.prize}** の配布が終了しました！\n"
+                f"当選者: {' '.join(f'<@{uid}>' for uid in chosen)}"
+            )
         else:
-            self.cog.active_giveaways.pop(message_id, None)
-            self.cog.giveaway_tasks.pop(message_id, None)
+            view.winners = []
+            result = f"**{view.prize}** の配布が終了しました。参加者はいませんでした。"
+
+        try:
+            await view.message.channel.send(result)
+        except discord.HTTPException:
+            pass
+
+        self.cog.active_giveaways.pop(message_id, None)
 
         await interaction.response.edit_message(
-            content=f"抽選「{view.prize}」を中止しました。",
+            content=f"配布「{view.prize}」を終了しました。",
+            view=None
+        )
+
+
+# =========================================================
+# GIVEAWAY REDRAW (配布再抽選)
+# =========================================================
+
+class RedrawGiveawayView(discord.ui.View):
+    def __init__(self, cog, options):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.select.options = options
+
+    @discord.ui.select(
+        placeholder="再抽選する配布を選択",
+        custom_id="giveaway_redraw_select"
+    )
+    async def select(self, interaction, select):
+        message_id = int(select.values[0])
+        view = self.cog.ended_giveaways.get(message_id)
+
+        if not view:
+            await interaction.response.edit_message(
+                content="配布が見つかりません。",
+                view=None
+            )
+            return
+
+        if interaction.guild_id != view.message.guild.id:
+            await interaction.response.edit_message(
+                content="このサーバーの配布ではありません。",
+                view=None
+            )
+            return
+
+        ids = list(view.participants)
+        if not ids:
+            await interaction.response.edit_message(
+                content="参加者がいないため、再抽選できません。",
+                view=None
+            )
+            return
+
+        # 再抽選（前回の当選者を除外したい場合はここで調整可能）
+        chosen = random.sample(ids, min(view.winner_count, len(ids)))
+        view.winners = chosen
+
+        result = (
+            f"🎉 **{view.prize}** の再抽選が行われました！\n"
+            f"当選者: {' '.join(f'<@{uid}>' for uid in chosen)}"
+        )
+
+        try:
+            await view.message.channel.send(result)
+        except discord.HTTPException:
+            pass
+
+        await interaction.response.edit_message(
+            content=f"配布「{view.prize}」の再抽選を実行しました。",
             view=None
         )
 
@@ -416,15 +381,6 @@ class StopGiveawayView(discord.ui.View):
 # =========================================================
 
 def build_verify_embed(title: str, description: str, role: discord.Role, guild_id: int):
-    """認証パネル用の埋め込みを作成する。
-
-    構成:
-      [タイトル]
-      [説明文]
-      (空行)
-      認証後 @ロール が付与されます
-      **サーバーID | Dev.@anzy1m**
-    """
     embed = discord.Embed(
         title=title,
         description=(
@@ -492,7 +448,6 @@ class VerifyView(discord.ui.View):
         self.verify_type = verify_type
 
         self.verify_button.custom_id = f"verify_{role.id}_{verify_type}"
-        # ボタンラベルは常に「認証 ✅」
         self.verify_button.label = "認証 ✅"
 
     @discord.ui.button(
@@ -1352,9 +1307,8 @@ class TicketEditModal(discord.ui.Modal):
 class SlashCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.pending_giveaways = {}
         self.active_giveaways = {}
-        self.giveaway_tasks = {}
+        self.ended_giveaways = {}
         self.vouch_panels = {}
         self.status_panels = {}
         self.ticket_panels = {}
@@ -1394,22 +1348,24 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /giveaway (作成のみ・待機状態)
+    # /配布作成 (作成と同時に開始)
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="giveaway",
-        description="景品の抽選を作成します（開始は /giveaway-start）"
+        name="配布作成",
+        description="景品の配布を作成し、同時に開始します"
     )
     @app_commands.describe(
         prize="景品名",
+        duration="配布期間（例: 30m、1h、1d、1week）",
         winners="当選人数"
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def giveaway(
+    async def giveaway_create(
         self,
         interaction,
         prize: str,
+        duration: str,
         winners: app_commands.Range[int, 1, 20] = 1
     ):
         if not isinstance(interaction.channel, discord.TextChannel):
@@ -1419,14 +1375,24 @@ class SlashCog(commands.Cog):
             )
             return
 
+        try:
+            seconds = parse_duration(duration)
+        except ValueError as error:
+            await interaction.response.send_message(
+                str(error),
+                ephemeral=True
+            )
+            return
+
         giveaway_id = uuid.uuid4().hex[:12]
+        end_time = int(time.time() + seconds)
 
         view = GiveawayView(
-            self, giveaway_id, prize, winners
+            self, giveaway_id, prize, winners, end_time
         )
 
         await interaction.response.send_message(
-            "抽選を作成しました。`/giveaway-start` で開始できます。",
+            f"配布「{prize}」を開始しました。期間: {duration}",
             ephemeral=True
         )
 
@@ -1436,78 +1402,58 @@ class SlashCog(commands.Cog):
         )
         view.message = message
 
-        self.pending_giveaways[message.id] = view
+        self.active_giveaways[message.id] = view
+
+        # 自動終了タスク
+        async def finish():
+            try:
+                await asyncio.sleep(seconds)
+
+                # すでに手動終了している場合はスキップ
+                if view.ended:
+                    return
+
+                view.ended = True
+                await view.refresh()
+
+                ids = list(view.participants)
+                if ids:
+                    chosen = random.sample(ids, min(view.winner_count, len(ids)))
+                    view.winners = chosen
+                    result = (
+                        f"🎉 **{view.prize}** の配布が終了しました！\n"
+                        f"当選者: {' '.join(f'<@{uid}>' for uid in chosen)}"
+                    )
+                else:
+                    view.winners = []
+                    result = f"**{view.prize}** の配布が終了しました。参加者はいませんでした。"
+
+                try:
+                    await view.message.channel.send(result)
+                except discord.HTTPException:
+                    pass
+
+            except asyncio.CancelledError:
+                pass
+            except discord.HTTPException:
+                pass
+            finally:
+                self.active_giveaways.pop(message.id, None)
+                self.ended_giveaways[message.id] = view
+
+        asyncio.create_task(finish())
 
     # -----------------------------------------------------
-    # /giveaway-start
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="giveaway-start",
-        description="待機中の抽選を選択して開始します"
-    )
-    @app_commands.describe(
-        duration="例: 30m、1h、1d、1week"
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def giveaway_start(self, interaction, duration: str = "1h"):
-        try:
-            parse_duration(duration)
-        except ValueError as error:
-            await interaction.response.send_message(
-                str(error),
-                ephemeral=True
-            )
-            return
-
-        guild_giveaways = {
-            mid: view for mid, view in self.pending_giveaways.items()
-            if view.message and view.message.guild
-            and view.message.guild.id == interaction.guild_id
-            and not view.started and not view.ended and not view.cancelled
-        }
-
-        if not guild_giveaways:
-            await interaction.response.send_message(
-                "待機中の抽選が見つかりません。先に `/giveaway` で作成してください。",
-                ephemeral=True
-            )
-            return
-
-        options = []
-        for mid, view in list(guild_giveaways.items())[:25]:
-            options.append(
-                discord.SelectOption(
-                    label=f"{view.prize[:50]}",
-                    description=f"ID: {mid} / 当選人数: {view.winner_count}人",
-                    value=str(mid)
-                )
-            )
-
-        view = StartGiveawayView(self, options, duration)
-
-        await interaction.response.send_message(
-            f"開始する抽選を選択してください。（期間: {duration}）",
-            view=view,
-            ephemeral=True
-        )
-
-    # -----------------------------------------------------
-    # /giveaway-stop
+    # /配布終了 (即座に終了して当選者発表)
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="giveaway-stop",
-        description="進行中または待機中の抽選を選択して中止します"
+        name="配布終了",
+        description="開催中の配布を選択して即座に終了し、当選者を発表します"
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway_stop(self, interaction):
         guild_giveaways = {}
-        for mid, view in self.pending_giveaways.items():
-            if view.message and view.message.guild and \
-               view.message.guild.id == interaction.guild_id and \
-               not view.ended and not view.cancelled:
-                guild_giveaways[mid] = view
         for mid, view in self.active_giveaways.items():
             if view.message and view.message.guild and \
                view.message.guild.id == interaction.guild_id and \
@@ -1516,18 +1462,17 @@ class SlashCog(commands.Cog):
 
         if not guild_giveaways:
             await interaction.response.send_message(
-                "中止できる抽選が見つかりません。",
+                "開催中の配布が見つかりません。",
                 ephemeral=True
             )
             return
 
         options = []
         for mid, view in list(guild_giveaways.items())[:25]:
-            state = "開催中" if view.started else "待機中"
             options.append(
                 discord.SelectOption(
                     label=f"{view.prize[:50]}",
-                    description=f"ID: {mid} / {state} / 参加者: {len(view.participants)}人",
+                    description=f"ID: {mid} / 参加者: {len(view.participants)}人",
                     value=str(mid)
                 )
             )
@@ -1535,17 +1480,59 @@ class SlashCog(commands.Cog):
         view = StopGiveawayView(self, options)
 
         await interaction.response.send_message(
-            "中止する抽選を選択してください。",
+            "終了する配布を選択してください。",
             view=view,
             ephemeral=True
         )
 
     # -----------------------------------------------------
-    # /embed
+    # /配布再抽選
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="embed",
+        name="配布再抽選",
+        description="終了した配布を選択して当選者を再抽選します"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def giveaway_redraw(self, interaction):
+        guild_giveaways = {}
+        for mid, view in self.ended_giveaways.items():
+            if view.message and view.message.guild and \
+               view.message.guild.id == interaction.guild_id and \
+               not view.cancelled:
+                guild_giveaways[mid] = view
+
+        if not guild_giveaways:
+            await interaction.response.send_message(
+                "再抽選できる配布が見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        options = []
+        for mid, view in list(guild_giveaways.items())[:25]:
+            options.append(
+                discord.SelectOption(
+                    label=f"{view.prize[:50]}",
+                    description=f"ID: {mid} / 参加者: {len(view.participants)}人",
+                    value=str(mid)
+                )
+            )
+
+        view = RedrawGiveawayView(self, options)
+
+        await interaction.response.send_message(
+            "再抽選する配布を選択してください。",
+            view=view,
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
+    # /埋め込み送信
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="埋め込み送信",
         description="埋め込みメッセージを送信します"
     )
     @app_commands.describe(
@@ -1590,11 +1577,11 @@ class SlashCog(commands.Cog):
         await interaction.channel.send(embed=embed)
 
     # -----------------------------------------------------
-    # /dm-anc
+    # /DM送信
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="dm-anc",
+        name="DM送信",
         description="指定したユーザーにDMを送信します"
     )
     @app_commands.describe(
@@ -1629,11 +1616,11 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /verify
+    # /認証パネル
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="verify",
+        name="認証パネル",
         description="認証パネルを作成します"
     )
     @app_commands.describe(
@@ -1666,7 +1653,6 @@ class SlashCog(commands.Cog):
 
         verify_type = type.value if type else "button"
 
-        # ロールが指定されている場合はそのままパネルを作成
         if role is not None:
             if role.is_default() or role.managed:
                 await interaction.response.send_message(
@@ -1687,7 +1673,6 @@ class SlashCog(commands.Cog):
             await interaction.channel.send(embed=embed, view=view)
             return
 
-        # ロール未指定の場合はセレクトメニューで選択
         roles = [
             r for r in interaction.guild.roles
             if not r.is_default()
@@ -1722,11 +1707,11 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /vouch-panel
+    # /実績パネル
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="vouch-panel",
+        name="実績パネル",
         description="実績送信パネルを作成します"
     )
     @app_commands.describe(
@@ -1773,11 +1758,11 @@ class SlashCog(commands.Cog):
         await interaction.channel.send(embed=embed, view=view)
 
     # -----------------------------------------------------
-    # /status
+    # /対応状況
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="status",
+        name="対応状況",
         description="対応状況パネルを作成します"
     )
     @app_commands.describe(
@@ -1843,11 +1828,11 @@ class SlashCog(commands.Cog):
         self.status_panels[panel_id] = panel
 
     # -----------------------------------------------------
-    # /ticket
+    # /チケット
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="ticket",
+        name="チケット",
         description="チケットパネルを作成します"
     )
     @app_commands.describe(
@@ -1919,11 +1904,11 @@ class SlashCog(commands.Cog):
         self.ticket_panels[panel_id]["message_id"] = message.id
 
     # -----------------------------------------------------
-    # /ticket-edit
+    # /チケットパネル編集
     # -----------------------------------------------------
 
     @app_commands.command(
-        name="ticket-edit",
+        name="チケットパネル編集",
         description="チケットパネルを編集します"
     )
     @app_commands.checks.has_permissions(manage_guild=True)
