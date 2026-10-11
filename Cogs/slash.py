@@ -613,7 +613,6 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
-        # 既存チケット数チェック
         user_tickets = [
             ch for ch in interaction.guild.channels
             if isinstance(ch, discord.TextChannel)
@@ -626,7 +625,6 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
-        # 画像のような埋め込み + セレクトメニューを表示
         title = panel.get("panel_title") or "購入・お問い合わせ"
         description = panel.get("panel_description") or "チケットを開きましたらスタッフが対応するまでお待ちください。"
 
@@ -677,7 +675,6 @@ class TicketRequirementSelectView(discord.ui.View):
     async def select(self, interaction, select):
         requirement_name = select.values[0]
 
-        # 該当要件の説明を取得
         requirement_desc = ""
         for req in self.panel.get("requirements", []):
             if req.get("name") == requirement_name:
@@ -722,8 +719,6 @@ class TicketDetailModal(discord.ui.Modal):
         if not isinstance(category, discord.CategoryChannel):
             return await interaction.followup.send("カテゴリーが見つかりません。", ephemeral=True)
 
-        # ===== 権限設定 =====
-        # 全員がメッセージ送信可能、閲覧はデフォルト不可
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(
                 view_channel=False
@@ -741,7 +736,6 @@ class TicketDetailModal(discord.ui.Modal):
             )
         }
 
-        # 対応ロール（メンション + フル権限）
         mention_role_id = panel.get("mention_role_id")
         if mention_role_id:
             role = interaction.guild.get_role(mention_role_id)
@@ -752,7 +746,6 @@ class TicketDetailModal(discord.ui.Modal):
                     read_message_history=True
                 )
 
-        # 「閲覧 + 送信」できるロール
         for rid in panel.get("access_role_ids", []):
             role = interaction.guild.get_role(rid)
             if role:
@@ -762,7 +755,6 @@ class TicketDetailModal(discord.ui.Modal):
                 ow.read_message_history = True
                 overwrites[role] = ow
 
-        # 「閲覧 + 送信」できる人
         for uid in panel.get("access_user_ids", []):
             member = interaction.guild.get_member(uid)
             if member:
@@ -772,7 +764,6 @@ class TicketDetailModal(discord.ui.Modal):
                 ow.read_message_history = True
                 overwrites[member] = ow
 
-        # ===== チャンネル作成 =====
         channel_name = f"ticket-{interaction.user.name}"[:100]
 
         try:
@@ -788,14 +779,12 @@ class TicketDetailModal(discord.ui.Modal):
                 ephemeral=True
             )
 
-        # ===== 埋め込み =====
         embed = discord.Embed(
             title=panel.get("embed_title") or "チケット",
             description=panel.get("embed_description") or "サポートします。",
             color=discord.Color.blurple()
         )
 
-        # 要件を表示（説明付き）
         req_value = self.requirement_name
         if self.requirement_desc:
             req_value += f"\n{self.requirement_desc}"
@@ -1461,7 +1450,6 @@ class SlashCog(commands.Cog):
         name="nuke",
         description="現在のテキストチャンネルを再作成します"
     )
-    @app_commands.checks.has_permissions(manage_channels=True)
     async def nuke(self, interaction):
         if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
@@ -1489,7 +1477,6 @@ class SlashCog(commands.Cog):
         duration="配布期間（例: 30m、1h、1d、1week）",
         winners="当選人数"
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway_create(
         self,
         interaction,
@@ -1578,7 +1565,6 @@ class SlashCog(commands.Cog):
         name="配布終了",
         description="開催中の配布を選択して即座に終了し、当選者を発表します"
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway_stop(self, interaction):
         guild_giveaways = {}
         for mid, view in self.active_giveaways.items():
@@ -1620,7 +1606,6 @@ class SlashCog(commands.Cog):
         name="配布再抽選",
         description="終了した配布を選択して当選者を再抽選します"
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def giveaway_redraw(self, interaction):
         guild_giveaways = {}
         for mid, view in self.ended_giveaways.items():
@@ -1669,7 +1654,6 @@ class SlashCog(commands.Cog):
         footer="フッター",
         image="画像URL"
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
     async def embed(
         self,
         interaction,
@@ -1715,7 +1699,6 @@ class SlashCog(commands.Cog):
         user="送信先のユーザー",
         message="送信するメッセージ"
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def dm_anc(
         self,
         interaction,
@@ -1762,7 +1745,6 @@ class SlashCog(commands.Cog):
             app_commands.Choice(name="ボタン認証", value="button")
         ]
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def verify(
         self,
         interaction,
@@ -1847,7 +1829,6 @@ class SlashCog(commands.Cog):
         description="パネル説明",
         counter_channel="任意：実績数を表示するチャンネル"
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def vouch_panel(
         self,
         interaction,
@@ -1984,7 +1965,6 @@ class SlashCog(commands.Cog):
             app_commands.Choice(name="全員", value="everyone")
         ]
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def ticket(
         self,
         interaction,
@@ -2005,7 +1985,6 @@ class SlashCog(commands.Cog):
     ):
         panel_id = uuid.uuid4().hex[:10]
 
-        # 要件リストをパース（形式: "名前:説明,名前:説明"）
         requirement_list = []
         for token in requirements.split(","):
             token = token.strip()
@@ -2026,7 +2005,6 @@ class SlashCog(commands.Cog):
         if not requirement_list:
             requirement_list = [{"name": "その他", "description": ""}]
 
-        # アクセス権限（閲覧 + 送信）のロール/ユーザーをパース
         def parse_role_ids(text):
             if not text:
                 return []
@@ -2102,7 +2080,6 @@ class SlashCog(commands.Cog):
         name="チケットパネル編集",
         description="チケットパネルを編集します"
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def ticket_edit(self, interaction):
         guild_panels = {
             pid: panel for pid, panel in self.ticket_panels.items()
