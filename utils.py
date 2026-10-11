@@ -123,26 +123,28 @@ def make_permanent(entries, user_id, guild_id):
 
 def has_license_sync(user_id: int, guild_id) -> bool:
     """
-    純粋な同期チェック。
+    利用権限チェック（厳密版）。
     - guild_id が None のエントリ → 全サーバーで有効
     - guild_id が指定されたエントリ → そのサーバーでのみ有効
-    - expires_at が None → 永久
-    - expires_at が未来 → 有効期限内
+    - guild_id が None（DM等）で、サーバー限定エントリしかない場合は拒否
     """
     now = int(time.time())
     for e in load_license_entries():
         if e["user_id"] != user_id:
             continue
 
-        # サーバー限定エントリの場合、guild_id が一致する必要がある
-        if e["guild_id"] is not None and e["guild_id"] != guild_id:
-            continue
+        # サーバー限定エントリの場合
+        if e["guild_id"] is not None:
+            # DM等で guild_id が無い場合は拒否
+            if guild_id is None:
+                continue
+            # サーバーIDが一致しない場合は拒否
+            if e["guild_id"] != guild_id:
+                continue
 
-        # 永久
+        # 期限チェック
         if e["expires_at"] is None:
             return True
-
-        # 期限内
         if e["expires_at"] > now:
             return True
 
@@ -156,10 +158,9 @@ def has_license_sync(user_id: int, guild_id) -> bool:
 async def is_authorized(interaction: discord.Interaction) -> bool:
     """
     グローバルチェック。
-    許可条件（いずれかを満たせばOK）:
+    許可条件:
       1. Botオーナー
-      2. サーバー管理者
-      3. license_entries に登録済み（期限内）
+      2. license_entries に登録済み（期限内 / サーバーID一致）
     ただし /利用権限管理 は Botオーナーのみ。
     """
     # ===== 1. Botオーナー =====
@@ -187,15 +188,7 @@ async def is_authorized(interaction: discord.Interaction) -> bool:
             pass
         return False
 
-    # ===== 2. サーバー管理者 =====
-    try:
-        if interaction.guild and isinstance(interaction.user, discord.Member):
-            if interaction.user.guild_permissions.administrator:
-                return True
-    except Exception:
-        pass
-
-    # ===== 3. 利用権限（サーバーID付きも含む） =====
+    # ===== 2. 利用権限チェック =====
     if has_license_sync(interaction.user.id, interaction.guild_id):
         return True
 
