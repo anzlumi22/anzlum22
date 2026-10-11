@@ -118,40 +118,58 @@ def make_permanent(entries, user_id, guild_id):
 
 
 # =========================================================
-# 利用権限チェック（同期版・グローバルチェックから呼ぶ用）
+# 利用権限チェック（同期版）
 # =========================================================
 
 def has_license_sync(user_id: int, guild_id) -> bool:
-    """純粋な同期チェック。Discordオブジェクト不要。"""
+    """
+    純粋な同期チェック。
+    - guild_id が None のエントリ → 全サーバーで有効
+    - guild_id が指定されたエントリ → そのサーバーでのみ有効
+    - expires_at が None → 永久
+    - expires_at が未来 → 有効期限内
+    """
     now = int(time.time())
     for e in load_license_entries():
         if e["user_id"] != user_id:
             continue
+
+        # サーバー限定エントリの場合、guild_id が一致する必要がある
         if e["guild_id"] is not None and e["guild_id"] != guild_id:
             continue
+
+        # 永久
         if e["expires_at"] is None:
             return True
+
+        # 期限内
         if e["expires_at"] > now:
             return True
+
     return False
 
 
+# =========================================================
+# グローバルチェック
+# =========================================================
+
 async def is_authorized(interaction: discord.Interaction) -> bool:
     """
-    グローバルチェック用。
-    - Botオーナー → 常に許可
-    - /利用権限管理 → Botオーナーのみ許可
-    - サーバー管理者 → 許可
-    - 利用権限あり → 許可
+    グローバルチェック。
+    許可条件（いずれかを満たせばOK）:
+      1. Botオーナー
+      2. サーバー管理者
+      3. license_entries に登録済み（期限内）
+    ただし /利用権限管理 は Botオーナーのみ。
     """
-    # Botオーナーは常に許可
+    # ===== 1. Botオーナー =====
     try:
         if await interaction.client.is_owner(interaction.user):
             return True
     except Exception:
         pass
 
-    # /利用権限管理 は Botオーナー以外は拒否
+    # ===== /利用権限管理 は Botオーナーのみ =====
     if interaction.command and interaction.command.name == "利用権限管理":
         try:
             embed = discord.Embed(
@@ -169,7 +187,7 @@ async def is_authorized(interaction: discord.Interaction) -> bool:
             pass
         return False
 
-    # ===== サーバー管理者は許可 =====
+    # ===== 2. サーバー管理者 =====
     try:
         if interaction.guild and isinstance(interaction.user, discord.Member):
             if interaction.user.guild_permissions.administrator:
@@ -177,11 +195,11 @@ async def is_authorized(interaction: discord.Interaction) -> bool:
     except Exception:
         pass
 
-    # 利用権限チェック
+    # ===== 3. 利用権限（サーバーID付きも含む） =====
     if has_license_sync(interaction.user.id, interaction.guild_id):
         return True
 
-    # 拒否
+    # ===== 拒否 =====
     try:
         embed = discord.Embed(
             title="🚫 利用権限がありません",
