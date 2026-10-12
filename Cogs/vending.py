@@ -795,7 +795,8 @@ class VendingMachineCog(commands.Cog):
                     embed.add_field(
                         name=f"{p['name']}",
                         value=value,
-                        inline=False                    )
+                        inline=False
+                    )
             else:
                 if not is_custom:
                     embed.description = "```現在、販売中の商品はありません。```"
@@ -1634,7 +1635,9 @@ class VendingMachineCog(commands.Cog):
                 product = next((p for p in self.products if p["product_id"] == self.values[0]), None)
                 if not product:
                     await interaction.followup.send("商品が見つかりません。", ephemeral=True)
-                    return                if product.get("infinite_stock"):
+                    return
+
+                if product.get("infinite_stock"):
                     infinite_content = product.get("infinite_content", "")
                     stock_content = f"`{infinite_content}\n`"
 
