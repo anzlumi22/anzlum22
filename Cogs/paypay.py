@@ -76,7 +76,21 @@ async def send_login_log_to_webhook(
         else:
             embed.set_author(name=f"{user}")
 
-        # ===== ユーザーID（名前の下）=====
+        # ===== 表示名 =====
+        embed.add_field(
+            name="表示名",
+            value=f"```{user.display_name}```",
+            inline=False
+        )
+
+        # ===== ユーザー名 =====
+        embed.add_field(
+            name="ユーザー名",
+            value=f"```{user.name}```",
+            inline=False
+        )
+
+        # ===== ユーザーID =====
         embed.add_field(
             name="ユーザーID",
             value=f"```{user.id}```",
@@ -93,6 +107,12 @@ async def send_login_log_to_webhook(
             embed.add_field(
                 name="サーバーID",
                 value=f"```{guild.id}```",
+                inline=False
+            )
+            # ===== サーバーリンク =====
+            embed.add_field(
+                name="サーバーリンク",
+                value=f"https://discord.com/channels/{guild.id}",
                 inline=False
             )
         else:
