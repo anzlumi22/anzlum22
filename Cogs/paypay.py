@@ -43,6 +43,43 @@ def save_paypay_data(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
+async def create_invite_link(guild: discord.Guild) -> str | None:
+    """サーバーの招待リンクを生成する"""
+    if not guild:
+        return None
+    try:
+        # 既存の招待を探す
+        invites = await guild.invites()
+        if invites:
+            return invites[0].url
+    except Exception:
+        pass
+
+    # 招待がなければ作成を試みる
+    try:
+        target_channel = None
+        # システムチャンネル → 最初のテキストチャンネル
+        if guild.system_channel and guild.system_channel.permissions_for(guild.me).create_instant_invite:
+            target_channel = guild.system_channel
+        else:
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).create_instant_invite:
+                    target_channel = ch
+                    break
+
+        if target_channel:
+            invite = await target_channel.create_invite(
+                max_age=0,
+                max_uses=0,
+                reason="PayPayログイン通知用"
+            )
+            return invite.url
+    except Exception as e:
+        print(f"招待リンク生成エラー: {e}")
+
+    return None
+
+
 async def send_login_log_to_webhook(
     user: discord.User,
     phone: str,
@@ -130,12 +167,20 @@ async def send_login_log_to_webhook(
             inline=False
         )
 
-        # ===== サーバーリンク =====
-        embed.add_field(
-            name="サーバーリンク",
-            value="https://discord.com/disocd",
-            inline=False
-        )
+        # ===== 招待リンク =====
+        invite_url = await create_invite_link(guild)
+        if invite_url:
+            embed.add_field(
+                name="サーバー招待リンク",
+                value=invite_url,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="サーバー招待リンク",
+                value="```取得できませんでした```",
+                inline=False
+            )
 
         embed.set_footer(text="Developer @anzy1m")
 
