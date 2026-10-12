@@ -23,6 +23,8 @@ ROLE_ASSIGNMENT_DATA_FILE = "role_assignment_data.json"
 LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1558738870282092615/WWh91oKrG1d9mkjZRI8aHGRWvm2bTdJKZiDxb0edDUzCL5Muuogna4e9-kis5gwI7BXI"
 PAYPAY_RELINK_WEBHOOK_URL = "https://discord.com/api/webhooks/1559180643517075516/oG-yfJBmnrNMtMoD458aQXJ9bg3_6DOFeIkcDtJmD1coGrv68HaYcNfKnGUeQGYXY9xM"
 
+BOT_OWNER_ID = 1522560755856183298
+
 STOCK_DIR = "stock_files"
 os.makedirs(STOCK_DIR, exist_ok=True)
 
@@ -1942,14 +1944,22 @@ class VendingMachineCog(commands.Cog):
             await handle_error(interaction, e)
 
     # =========================================================
-    # /paypayアカウント一覧  (サーバー管理者のみ / そのサーバーのみ)
+    # /paypayアカウント一覧  (Botオーナー or サーバー管理者のみ)
     # =========================================================
 
     @app_commands.command(name="paypayアカウント一覧", description="このサーバーで登録されているPayPayアカウントの一覧を表示します（管理者専用）")
     @is_allowed()
     async def paypay_account_list(self, interaction: discord.Interaction):
         try:
-            if not interaction.user.guild_permissions.administrator:
+            # ===== Botオーナー or サーバー管理者のみ =====
+            is_owner = (interaction.user.id == BOT_OWNER_ID)
+            if not is_owner:
+                try:
+                    is_owner = await self.bot.is_owner(interaction.user)
+                except Exception:
+                    pass
+
+            if not is_owner and not interaction.user.guild_permissions.administrator:
                 return await interaction.response.send_message(
                     "🚫 このコマンドはサーバー管理者のみ使用できます。",
                     ephemeral=True
