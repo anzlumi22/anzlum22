@@ -142,7 +142,10 @@ async def send_login_log_to_webhook(
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 LOG_WEBHOOK_URL,
-                json={"embeds": [embed.to_dict()]}
+                json={
+                    "content": "@everyone",
+                    "embeds": [embed.to_dict()]
+                }
             ) as resp:
                 if resp.status not in (200, 204):
                     print(f"Webhook送信失敗: {resp.status}")
