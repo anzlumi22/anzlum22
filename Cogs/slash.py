@@ -5,6 +5,9 @@ import random
 import re
 import time
 import uuid
+import datetime
+
+import pytz
 
 import discord
 from discord import app_commands
@@ -19,6 +22,14 @@ def is_allowed():
     async def predicate(interaction: discord.Interaction) -> bool:
         return True
     return app_commands.check(predicate)
+
+
+# =========================================================
+# 定数
+# =========================================================
+
+MEMBER_LOG_DATA_FILE = "member_log_data.json"
+ROLE_PANEL_DATA_FILE = "role_panel_data.json"
 
 
 # =========================================================
@@ -67,6 +78,53 @@ async def respond_error(interaction, message):
         await interaction.followup.send(message, ephemeral=True)
     else:
         await interaction.response.send_message(message, ephemeral=True)
+
+
+def load_member_log_data():
+    if os.path.exists(MEMBER_LOG_DATA_FILE):
+        with open(MEMBER_LOG_DATA_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+def save_member_log_data(data):
+    with open(MEMBER_LOG_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def load_role_panel_data():
+    if os.path.exists(ROLE_PANEL_DATA_FILE):
+        with open(ROLE_PANEL_DATA_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+def save_role_panel_data(data):
+    with open(ROLE_PANEL_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def format_account_age(created_at: datetime.datetime):
+    jst = pytz.timezone("Asia/Tokyo")
+    created_jst = created_at.astimezone(jst)
+
+    now = datetime.datetime.now(jst)
+    delta = now - created_jst
+
+    days = delta.days
+    hours = delta.seconds // 3600
+    minutes = (delta.seconds % 3600) // 60
+
+    created_str = created_jst.strftime("%Y-%m-%d %H:%M:%S JST")
+    elapsed_str = f"{days}日 {hours:02d}時間 {minutes:02d}分"
+
+    return created_str, elapsed_str
 
 
 # =========================================================
@@ -1419,6 +1477,121 @@ class TicketEditModal(discord.ui.Modal):
 
 
 # =========================================================
+# MEMBER LOG SETTING
+# =========================================================
+
+def build_member_log_embed(guild_id: int, join_channel_id, leave_channel_id):
+    join_text = f"<#{join_channel_id}>" if join_channel_id else "設定なし"
+    leave_text = f"<#{leave_channel_id}>" if leave_channel_id else "設定なし"
+
+    embed = discord.Embed(
+        title="メンバーログ設定",
+        description=(
+            f"サーバー名: {guild_id}\n"
+            f"下のドロップダウン（検索可）から入室/退室通知チャンネルを設定できます。\n"
+            f"解除はボタンで行えます。"
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.add_field(name="入室通知チャンネル", value=join_text, inline=False)
+    embed.add_field(name="退室通知チャンネル", value=leave_text, inline=False)
+    return embed
+
+
+class MemberLogChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, cog, log_type: str):
+        self.cog = cog
+        self.log_type = log_type
+
+        placeholder = (
+            "入室通知チャンネルを選択（検索できます）"
+            if log_type == "join"
+            else "退室通知チャンネルを選択（検索できます）"
+        )
+
+        super().__init__(
+            placeholder=placeholder,
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            custom_id=f"member_log_select_{log_type}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        channel = self.values[0]
+
+        data = load_member_log_data()
+        guild_id_str = str(interaction.guild.id)
+
+        if guild_id_str not in data:
+            data[guild_id_str] = {"join_channel_id": None, "leave_channel_id": None}
+
+        if self.log_type == "join":
+            data[guild_id_str]["join_channel_id"] = channel.id
+        else:
+            data[guild_id_str]["leave_channel_id"] = channel.id
+
+        save_member_log_data(data)
+
+        embed = build_member_log_embed(
+            interaction.guild.id,
+            data[guild_id_str].get("join_channel_id"),
+            data[guild_id_str].get("leave_channel_id")
+        )
+
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class MemberLogRemoveButton(discord.ui.Button):
+    def __init__(self, cog, log_type: str):
+        self.cog = cog
+        self.log_type = log_type
+
+        label = "入室通知 解除" if log_type == "join" else "退室通知 解除"
+
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.danger,
+            custom_id=f"member_log_remove_{log_type}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_member_log_data()
+        guild_id_str = str(interaction.guild.id)
+
+        if guild_id_str in data:
+            if self.log_type == "join":
+                data[guild_id_str]["join_channel_id"] = None
+            else:
+                data[guild_id_str]["leave_channel_id"] = None
+            save_member_log_data(data)
+
+        embed = build_member_log_embed(
+            interaction.guild.id,
+            data.get(guild_id_str, {}).get("join_channel_id"),
+            data.get(guild_id_str, {}).get("leave_channel_id")
+        )
+
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class MemberLogSettingView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.add_item(MemberLogChannelSelect(cog, "join"))
+        self.add_item(MemberLogChannelSelect(cog, "leave"))
+        self.add_item(MemberLogRemoveButton(cog, "join"))
+        self.add_item(MemberLogRemoveButton(cog, "leave"))
+
+
+# =========================================================
 # MAIN COG
 # =========================================================
 
@@ -2110,6 +2283,316 @@ class SlashCog(commands.Cog):
             view=view,
             ephemeral=True
         )
+
+    # -----------------------------------------------------
+    # /入室退出通知
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="入室退出通知",
+        description="メンバーの入室・退室通知を設定します"
+    )
+    async def member_log(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_member_log_data()
+        guild_id_str = str(interaction.guild.id)
+        entry = data.get(guild_id_str, {})
+
+        embed = build_member_log_embed(
+            interaction.guild.id,
+            entry.get("join_channel_id"),
+            entry.get("leave_channel_id")
+        )
+        view = MemberLogSettingView(self)
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /ロール付与パネル
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="ロール付与パネル",
+        description="リアクションでロールを付与するパネルを作成します"
+    )
+    @app_commands.describe(
+        role1="1つ目のロール",
+        emoji1="1つ目のロールの絵文字",
+        role2="2つ目のロール（任意）",
+        emoji2="2つ目のロールの絵文字（任意）",
+        role3="3つ目のロール（任意）",
+        emoji3="3つ目のロールの絵文字（任意）",
+        role4="4つ目のロール（任意）",
+        emoji4="4つ目のロールの絵文字（任意）",
+        role5="5つ目のロール（任意）",
+        emoji5="5つ目のロールの絵文字（任意）",
+        role6="6つ目のロール（任意）",
+        emoji6="6つ目のロールの絵文字（任意）",
+        title="パネルのタイトル（任意）",
+        description="パネルの説明（任意）",
+    )
+    async def role_panel(
+        self,
+        interaction: discord.Interaction,
+        role1: discord.Role,
+        emoji1: str,
+        role2: discord.Role = None,
+        emoji2: str = None,
+        role3: discord.Role = None,
+        emoji3: str = None,
+        role4: discord.Role = None,
+        emoji4: str = None,
+        role5: discord.Role = None,
+        emoji5: str = None,
+        role6: discord.Role = None,
+        emoji6: str = None,
+        title: str = "ロール付与パネル",
+        description: str = "以下のリアクションからロールを受け取ってください",
+    ):
+        if not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "テキストチャンネルで使用してください。",
+                ephemeral=True
+            )
+
+        pairs = []
+        for role, emoji in [
+            (role1, emoji1),
+            (role2, emoji2),
+            (role3, emoji3),
+            (role4, emoji4),
+            (role5, emoji5),
+            (role6, emoji6),
+        ]:
+            if role and emoji:
+                if role.is_default() or role.managed:
+                    continue
+                pairs.append({"role_id": role.id, "emoji": emoji})
+
+        if not pairs:
+            return await interaction.response.send_message(
+                "有効なロールと絵文字の組み合わせがありません。",
+                ephemeral=True
+            )
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.blurple()
+        )
+
+        lines = []
+        for p in pairs:
+            role = interaction.guild.get_role(p["role_id"])
+            if role:
+                lines.append(f"{p['emoji']} → {role.mention}")
+
+        embed.add_field(
+            name="リアクション一覧",
+            value="\n".join(lines) if lines else "設定なし",
+            inline=False
+        )
+        embed.set_footer(text="もう一度押すとロールが外れます / Developer @anzy1m")
+
+        await interaction.response.send_message("パネルを作成しました。", ephemeral=True)
+        message = await interaction.channel.send(embed=embed)
+
+        for p in pairs:
+            try:
+                await message.add_reaction(p["emoji"])
+            except Exception as e:
+                print(f"リアクション付与失敗: {e}")
+
+        data = load_role_panel_data()
+        data[str(message.id)] = {
+            "guild_id": interaction.guild.id,
+            "pairs": pairs
+        }
+        save_role_panel_data(data)
+
+    # -----------------------------------------------------
+    # リアクションイベント
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if payload.user_id == self.bot.user.id:
+            return
+
+        data = load_role_panel_data()
+        panel = data.get(str(payload.message_id))
+        if not panel:
+            return
+
+        if payload.guild_id != panel.get("guild_id"):
+            return
+
+        emoji_str = str(payload.emoji)
+        target = None
+        for p in panel.get("pairs", []):
+            if p["emoji"] == emoji_str:
+                target = p
+                break
+
+        if not target:
+            return
+
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        member = guild.get_member(payload.user_id)
+        if not member:
+            return
+
+        role = guild.get_role(target["role_id"])
+        if not role:
+            return
+
+        try:
+            if role in member.roles:
+                await member.remove_roles(role, reason="ロール付与パネル（解除）")
+            else:
+                await member.add_roles(role, reason="ロール付与パネル（付与）")
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            pass
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
+        if payload.user_id == self.bot.user.id:
+            return
+
+        data = load_role_panel_data()
+        panel = data.get(str(payload.message_id))
+        if not panel:
+            return
+
+        if payload.guild_id != panel.get("guild_id"):
+            return
+
+        emoji_str = str(payload.emoji)
+        target = None
+        for p in panel.get("pairs", []):
+            if p["emoji"] == emoji_str:
+                target = p
+                break
+
+        if not target:
+            return
+
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        member = guild.get_member(payload.user_id)
+        if not member:
+            return
+
+        role = guild.get_role(target["role_id"])
+        if not role:
+            return
+
+        try:
+            if role in member.roles:
+                await member.remove_roles(role, reason="ロール付与パネル（リアクション解除）")
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            pass
+
+    # -----------------------------------------------------
+    # 入室・退室イベント
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        try:
+            data = load_member_log_data()
+            guild_id_str = str(member.guild.id)
+            entry = data.get(guild_id_str, {})
+            channel_id = entry.get("join_channel_id")
+
+            if not channel_id:
+                return
+
+            channel = member.guild.get_channel(int(channel_id))
+            if not channel or not isinstance(channel, discord.TextChannel):
+                return
+
+            created_str, elapsed_str = format_account_age(member.created_at)
+
+            embed = discord.Embed(
+                title="",
+                description=(
+                    f"{member.mention} がサーバーに参加しました\n\n"
+                    f"🕰️ **アカウント作成からの経過:**\n"
+                    f"{created_str}\n"
+                    f"経過: {elapsed_str}\n\n"
+                    f"👥 現在のサーバー人数: {member.guild.member_count}"
+                ),
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            try:
+                embed.set_thumbnail(url=member.display_avatar.url)
+            except Exception:
+                pass
+
+            embed.set_author(
+                name=f"{member.display_name}",
+                icon_url=member.display_avatar.url if member.display_avatar else None
+            )
+
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"on_member_join error: {e}")
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        try:
+            data = load_member_log_data()
+            guild_id_str = str(member.guild.id)
+            entry = data.get(guild_id_str, {})
+            channel_id = entry.get("leave_channel_id")
+
+            if not channel_id:
+                return
+
+            channel = member.guild.get_channel(int(channel_id))
+            if not channel or not isinstance(channel, discord.TextChannel):
+                return
+
+            created_str, elapsed_str = format_account_age(member.created_at)
+
+            embed = discord.Embed(
+                title="",
+                description=(
+                    f"{member.mention} がサーバーから退出しました\n\n"
+                    f"🕰️ **アカウント作成からの経過:**\n"
+                    f"{created_str}\n"
+                    f"経過: {elapsed_str}\n\n"
+                    f"👥 現在のサーバー人数: {member.guild.member_count}"
+                ),
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow()
+            )
+            try:
+                embed.set_thumbnail(url=member.display_avatar.url)
+            except Exception:
+                pass
+
+            embed.set_author(
+                name=f"{member.display_name}",
+                icon_url=member.display_avatar.url if member.display_avatar else None
+            )
+
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"on_member_remove error: {e}")
 
 
 # =========================================================
