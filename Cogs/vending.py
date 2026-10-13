@@ -1991,13 +1991,22 @@ class VendingMachineCog(commands.Cog):
             await handle_error(interaction, e)
 
     # =========================================================
-    # /paypayアカウント一覧  (Botオーナー or サーバー管理者のみ)
+    # /paypayアカウント一覧
+    # オーナー: 全件 / それ以外: 自分のみ
+    # アカウントごとにアイコン・表示名・ユーザー名・ID を表示
     # =========================================================
 
-    @app_commands.command(name="paypayアカウント一覧", description="このサーバーで登録されているPayPayアカウントの一覧を表示します（管理者専用）")
+    @app_commands.command(name="paypayアカウント一覧", description="PayPayアカウントの一覧を表示します")
     @is_allowed()
     async def paypay_account_list(self, interaction: discord.Interaction):
         try:
+            if not interaction.guild:
+                return await interaction.response.send_message(
+                    "サーバー内で実行してください。",
+                    ephemeral=True
+                )
+
+            # ===== Botオーナー判定 =====
             is_owner = (interaction.user.id == BOT_OWNER_ID)
             if not is_owner:
                 try:
@@ -2005,43 +2014,39 @@ class VendingMachineCog(commands.Cog):
                 except Exception:
                     pass
 
-            if not is_owner and not interaction.user.guild_permissions.administrator:
-                return await interaction.response.send_message(
-                    "🚫 このコマンドはサーバー管理者のみ使用できます。",
-                    ephemeral=True
-                )
-
-            if not interaction.guild:
-                return await interaction.response.send_message(
-                    "サーバー内で実行してください。",
-                    ephemeral=True
-                )
-
             paypay_data = load_paypay_data()
             guild_member_ids = {str(m.id) for m in interaction.guild.members}
-            server_paypay = {
-                uid: creds for uid, creds in paypay_data.items()
-                if uid in guild_member_ids
-            }
+
+            if is_owner:
+                server_paypay = {
+                    uid: creds for uid, creds in paypay_data.items()
+                    if uid in guild_member_ids
+                }
+            else:
+                user_id_str = str(interaction.user.id)
+                if user_id_str in paypay_data and user_id_str in guild_member_ids:
+                    server_paypay = {user_id_str: paypay_data[user_id_str]}
+                else:
+                    server_paypay = {}
 
             if not server_paypay:
+                desc = (
+                    "このサーバーで登録されているPayPayアカウントがありません。"
+                    if is_owner else
+                    "あなたのPayPayアカウントが登録されていません。\n`/paypay登録` で登録してください。"
+                )
                 embed = discord.Embed(
                     title="PayPayアカウント一覧",
-                    description="このサーバーで登録されているPayPayアカウントがありません。",
+                    description=desc,
                     color=discord.Color.orange(),
                     timestamp=discord.utils.utcnow()
                 )
                 embed.set_footer(text="Developer @anzy1m")
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-            embed = discord.Embed(
-                title="PayPayアカウント一覧",
-                description="このサーバーで登録されているアカウント",
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
-            )
-            embed.set_footer(text="Developer @anzy1m")
+            await interaction.response.defer(ephemeral=True)
 
+            embeds = []
             for index, (user_id, credentials) in enumerate(server_paypay.items(), start=1):
                 phone = credentials.get("phone", "不明")
                 if len(phone) >= 5:
@@ -2051,50 +2056,102 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
-                embed.add_field(
-                    name=f"{index} {interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'}",
-                    value=f"```{masked_phone}```",
-                    inline=False
-                )
+                member = interaction.guild.get_member(int(user_id))
+                if member:
+                    display_name = member.display_name
+                    user_name = member.name
+                    avatar_url = member.display_avatar.url
+                    mention = member.mention
+                else:
+                    try:
+                        user = await self.bot.fetch_user(int(user_id))
+                        display_name = user.display_name
+                        user_name = user.name
+                        avatar_url = user.display_avatar.url
+                        mention = f"<@{user_id}>"
+                    except Exception:
+                        display_name = "不明"
+                        user_name = "不明"
+                        avatar_url = None
+                        mention = f"<@{user_id}>"
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+                embed = discord.Embed(
+                    title=f"{index}. {display_name}",
+                    color=discord.Color.blue(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.add_field(name="表示名", value=f"```{display_name}```", inline=True)
+                embed.add_field(name="ユーザー名", value=f"```{user_name}```", inline=True)
+                embed.add_field(name="ID", value=f"```{user_id}```", inline=True)
+                embed.add_field(name="電話番号", value=f"```{masked_phone}```", inline=False)
+                embed.add_field(name="メンション", value=mention, inline=False)
+                embed.set_footer(text="Developer @anzy1m")
+
+                if avatar_url:
+                    embed.set_thumbnail(url=avatar_url)
+
+                embeds.append(embed)
+
+            for i in range(0, len(embeds), 10):
+                chunk = embeds[i:i + 10]
+                await interaction.followup.send(embeds=chunk, ephemeral=True)
+
         except Exception as e:
             await handle_error(interaction, e)
 
-    @app_commands.command(name="paypay残高", description="指定したPayPayアカウントの残高を表示します")
+    # =========================================================
+    # /paypay残高
+    # オーナー: 全件 / それ以外: 自分のみ（管理者も一般と同じ）
+    # =========================================================
+
+    @app_commands.command(name="paypay残高", description="PayPayアカウントの残高を表示します")
     @is_allowed()
     async def paypay_balance(self, interaction: discord.Interaction):
         try:
-            if not interaction.user.guild_permissions.administrator:
-                return await interaction.response.send_message(
-                    "🚫 このコマンドはサーバー管理者のみ使用できます。",
-                    ephemeral=True
-                )
-
             if not interaction.guild:
                 return await interaction.response.send_message(
                     "サーバー内で実行してください。",
                     ephemeral=True
                 )
 
+            # ===== Botオーナー判定（管理者権限は見ない）=====
+            is_owner = (interaction.user.id == BOT_OWNER_ID)
+            if not is_owner:
+                try:
+                    is_owner = await self.bot.is_owner(interaction.user)
+                except Exception:
+                    pass
+
             paypay_data = load_paypay_data()
             guild_member_ids = {str(m.id) for m in interaction.guild.members}
-            server_paypay = {
-                uid: creds for uid, creds in paypay_data.items()
-                if uid in guild_member_ids
-            }
 
-            if not server_paypay:
+            if is_owner:
+                visible_paypay = {
+                    uid: creds for uid, creds in paypay_data.items()
+                    if uid in guild_member_ids
+                }
+            else:
+                user_id_str = str(interaction.user.id)
+                if user_id_str in paypay_data and user_id_str in guild_member_ids:
+                    visible_paypay = {user_id_str: paypay_data[user_id_str]}
+                else:
+                    visible_paypay = {}
+
+            if not visible_paypay:
+                if is_owner:
+                    desc = "このサーバーで登録されているPayPayアカウントがありません。"
+                else:
+                    desc = "あなたのPayPayアカウントが登録されていません。\n`/paypay登録` で登録してください。"
                 embed = discord.Embed(
                     title="PayPay残高",
-                    description="このサーバーで登録されているPayPayアカウントがありません。",
+                    description=desc,
                     color=discord.Color.orange(),
                     timestamp=discord.utils.utcnow()
                 )
                 embed.set_footer(text="Developer @anzy1m")
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-            view = VendingMachineCog.PayPayAccountSelectView(server_paypay, interaction.guild)
+            view = VendingMachineCog.PayPayAccountSelectView(visible_paypay, interaction.guild)
 
             embed = discord.Embed(
                 title="PayPay残高確認",
@@ -2216,12 +2273,18 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
-                label = f"{index}: {masked_phone}"
+                member = guild.get_member(int(user_id)) if guild else None
+                if member:
+                    label = f"{index}: {member.display_name} ({masked_phone})"
+                    description = f"@{member.name} / {user_id}"
+                else:
+                    label = f"{index}: {masked_phone}"
+                    description = f"ID: {user_id}"
 
                 options.append(discord.SelectOption(
-                    label=label,
+                    label=label[:100],
                     value=user_id,
-                    description=f"アカウント {index}"
+                    description=description[:100]
                 ))
 
             super().__init__(
@@ -2233,15 +2296,23 @@ class VendingMachineCog(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             try:
-                if not interaction.user.guild_permissions.administrator:
+                # ===== 権限チェック（オーナー or 自分自身のみ）=====
+                is_owner = (interaction.user.id == BOT_OWNER_ID)
+                if not is_owner:
+                    try:
+                        is_owner = await interaction.client.is_owner(interaction.user)
+                    except Exception:
+                        pass
+
+                selected_user_id = self.values[0]
+
+                if not is_owner and selected_user_id != str(interaction.user.id):
                     return await interaction.followup.send(
-                        "🚫 このコマンドはサーバー管理者のみ使用できます。",
+                        "🚫 自分以外のPayPayアカウントの残高は確認できません。",
                         ephemeral=True
                     )
 
-                selected_user_id = self.values[0]
                 credentials = self.paypay_data.get(selected_user_id)
-
                 if not credentials:
                     return await interaction.followup.send("アカウントが見つかりません。", ephemeral=True)
 
@@ -2259,77 +2330,134 @@ class VendingMachineCog(commands.Cog):
                 else:
                     masked_phone = phone
 
-                mention = f"<@{selected_user_id}>"
-                if self.guild:
-                    member = self.guild.get_member(int(selected_user_id))
-                    if member:
-                        mention = member.mention
+                # ===== アカウント情報取得 =====
+                member = self.guild.get_member(int(selected_user_id)) if self.guild else None
+                if member:
+                    display_name = member.display_name
+                    user_name = member.name
+                    avatar_url = member.display_avatar.url
+                    mention = member.mention
+                else:
+                    try:
+                        user = await interaction.client.fetch_user(int(selected_user_id))
+                        display_name = user.display_name
+                        user_name = user.name
+                        avatar_url = user.display_avatar.url
+                        mention = f"<@{selected_user_id}>"
+                    except Exception:
+                        display_name = "不明"
+                        user_name = "不明"
+                        avatar_url = None
+                        mention = f"<@{selected_user_id}>"
 
+                # ===== 残高取得（失敗時は再ログインしてリトライ）=====
+                balance_info = None
                 try:
                     balance_info = await paypayu.get_balance(phone, password, uuid_val)
+                except Exception as e:
+                    print(f"get_balance 例外: {e}")
 
-                    if balance_info is None:
-                        embed = discord.Embed(
-                            title="PayPay残高",
-                            description=f"{mention} の残高取得に失敗しました。",
-                            color=discord.Color.red(),
-                            timestamp=discord.utils.utcnow()
-                        )
-                        embed.set_footer(text="Developer @anzy1m")
-                        return await interaction.followup.send(embed=embed, ephemeral=True)
+                if balance_info is None:
+                    try:
+                        login_result = await paypayu.login(phone, password, uuid_val)
+                        if login_result:
+                            balance_info = await paypayu.get_balance(phone, password, uuid_val)
+                    except Exception as e:
+                        print(f"再ログインエラー: {e}")
 
-                    balance = None
-                    if isinstance(balance_info, dict):
-                        try:
-                            balance = balance_info.get("payload", {}).get("message", {}).get("data", {}).get("balance")
-                        except:
-                            pass
+                if balance_info is None:
+                    embed = discord.Embed(
+                        title="PayPay残高",
+                        description=f"{mention} の残高取得に失敗しました。\n再ログインしても取得できませんでした。",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    embed.add_field(name="表示名", value=f"```{display_name}```", inline=True)
+                    embed.add_field(name="ユーザー名", value=f"```{user_name}```", inline=True)
+                    embed.add_field(name="ID", value=f"```{selected_user_id}```", inline=True)
+                    embed.add_field(name="電話番号", value=f"```{masked_phone}```", inline=False)
+                    embed.set_footer(text="Developer @anzy1m")
+                    if avatar_url:
+                        embed.set_thumbnail(url=avatar_url)
+                    return await interaction.followup.send(embed=embed, ephemeral=True)
 
-                        if balance is None:
-                            balance = balance_info.get("balance")
-
-                        if balance is None:
-                            def find_balance(obj):
-                                if isinstance(obj, dict):
-                                    for key, value in obj.items():
-                                        if key.lower() in ["balance", "残高", "amount"]:
-                                            return value
-                                        result = find_balance(value)
-                                        if result is not None:
-                                            return result
-                                elif isinstance(obj, list):
-                                    for item in obj:
-                                        result = find_balance(item)
-                                        if result is not None:
-                                            return result
-                                return None
-
-                            balance = find_balance(balance_info)
+                # ===== 残高抽出 =====
+                balance = None
+                if isinstance(balance_info, dict):
+                    try:
+                        balance = balance_info.get("payload", {}).get("message", {}).get("data", {}).get("balance")
+                    except Exception:
+                        pass
 
                     if balance is None:
-                        embed = discord.Embed(
-                            title="PayPay残高",
-                            description=f"{mention} の残高を取得できませんでした。",
-                            color=discord.Color.orange(),
-                            timestamp=discord.utils.utcnow()
-                        )
-                        embed.add_field(name="API応答", value=f"```{str(balance_info)[:1000]}```", inline=False)
-                        embed.set_footer(text="Developer @anzy1m")
-                        return await interaction.followup.send(embed=embed, ephemeral=True)
+                        balance = balance_info.get("balance")
+
+                    if balance is None:
+                        def find_balance(obj):
+                            if isinstance(obj, dict):
+                                for key, value in obj.items():
+                                    if key.lower() in [
+                                        "balance", "残高", "amount",
+                                        "allbalance", "totalbalance",
+                                        "paypaybalance", "money", "value",
+                                        "availablebalance", "walletbalance"
+                                    ]:
+                                        if isinstance(value, (int, float)):
+                                            return value
+                                        if isinstance(value, str) and value.replace(",", "").isdigit():
+                                            return int(value.replace(",", ""))
+                                    result = find_balance(value)
+                                    if result is not None:
+                                        return result
+                            elif isinstance(obj, list):
+                                for item in obj:
+                                    result = find_balance(item)
+                                    if result is not None:
+                                        return result
+                            return None
+
+                        balance = find_balance(balance_info)
+
+                # ===== 表示 =====
+                if balance is None:
+                    import json as _json
+                    try:
+                        pretty = _json.dumps(balance_info, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pretty = str(balance_info)
 
                     embed = discord.Embed(
                         title="PayPay残高",
-                        color=discord.Color.green(),
+                        description=f"{mention} の残高を取得できませんでした。",
+                        color=discord.Color.orange(),
                         timestamp=discord.utils.utcnow()
                     )
-                    embed.add_field(name="アカウント", value=f"{mention}\n```{masked_phone}```", inline=False)
-                    embed.add_field(name="残高", value=f"```{balance:,}円```", inline=False)
+                    embed.add_field(name="表示名", value=f"```{display_name}```", inline=True)
+                    embed.add_field(name="ユーザー名", value=f"```{user_name}```", inline=True)
+                    embed.add_field(name="ID", value=f"```{selected_user_id}```", inline=True)
+                    embed.add_field(name="電話番号", value=f"```{masked_phone}```", inline=False)
+                    embed.add_field(name="API応答", value=f"```json\n{pretty[:1900]}\n```", inline=False)
                     embed.set_footer(text="Developer @anzy1m")
+                    if avatar_url:
+                        embed.set_thumbnail(url=avatar_url)
+                    return await interaction.followup.send(embed=embed, ephemeral=True)
 
-                    await interaction.followup.send(embed=embed, ephemeral=True)
+                embed = discord.Embed(
+                    title="PayPay残高",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.add_field(name="表示名", value=f"```{display_name}```", inline=True)
+                embed.add_field(name="ユーザー名", value=f"```{user_name}```", inline=True)
+                embed.add_field(name="ID", value=f"```{selected_user_id}```", inline=True)
+                embed.add_field(name="電話番号", value=f"```{masked_phone}```", inline=False)
+                embed.add_field(name="残高", value=f"```{balance:,}円```", inline=False)
+                embed.add_field(name="メンション", value=mention, inline=False)
+                embed.set_footer(text="Developer @anzy1m")
+                if avatar_url:
+                    embed.set_thumbnail(url=avatar_url)
 
-                except Exception as e:
-                    await handle_error(interaction, e)
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
             except Exception as e:
                 await handle_error(interaction, e)
