@@ -825,7 +825,6 @@ class TicketSetupSimpleView(discord.ui.View):
         message = await interaction.channel.send(embed=embed, view=view)
         self.cog.ticket_panels[panel_id]["message_id"] = message.id
 
-        # 永続化
         data = load_ticket_panel_data()
         data[panel_id] = self.cog.ticket_panels[panel_id]
         save_ticket_panel_data(data)
@@ -949,14 +948,12 @@ class TicketSetupMultiView(discord.ui.View):
             "access_user_ids": [],
         }
 
-        # パネル本体の埋め込み
         embed = discord.Embed(
             title="🎫 チケット",
             description=f"下のボタンからチケットを作成できます。\n1人につき最大 {s['max_tickets']} 件まで。",
             color=discord.Color.blurple()
         )
 
-        # 要件一覧を埋め込みの下に表示
         req_lines = []
         for r in s["requirements"]:
             emoji = r.get("emoji", "📝")
@@ -1152,6 +1149,7 @@ class TicketSetupEmbedModal(discord.ui.Modal):
 
 
 class TicketRequirementModal(discord.ui.Modal):
+    """要件追加モーダル（プレースホルダー文言も設定可能）"""
     def __init__(self, multi_view):
         super().__init__(title="要件を追加")
         self.multi_view = multi_view
@@ -1162,15 +1160,23 @@ class TicketRequirementModal(discord.ui.Modal):
         self.emoji_input = discord.ui.TextInput(
             label="絵文字", placeholder="例: 🛒", max_length=10, required=False
         )
+        self.placeholder_input = discord.ui.TextInput(
+            label="セレクトのプレースホルダー文言",
+            placeholder="例: Please choose your payment method.",
+            max_length=150,
+            required=False
+        )
         self.add_item(self.name_input)
         self.add_item(self.desc_input)
         self.add_item(self.emoji_input)
+        self.add_item(self.placeholder_input)
 
     async def on_submit(self, interaction):
         self.multi_view.settings["requirements"].append({
             "name": self.name_input.value.strip(),
             "description": self.desc_input.value.strip() or "",
-            "emoji": self.emoji_input.value.strip() or "📝"
+            "emoji": self.emoji_input.value.strip() or "📝",
+            "placeholder": self.placeholder_input.value.strip() or "Please choose an option."
         })
         await interaction.response.send_message(
             f"要件「{self.name_input.value.strip()}」を追加しました。",
@@ -1219,7 +1225,7 @@ class TicketSetupObjectSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET PANEL (既存のパネル表示・作成ロジック)
+# TICKET PANEL (ポップアップ式セレクト)
 # =========================================================
 
 class TicketCloseView(discord.ui.View):
@@ -1328,20 +1334,8 @@ class TicketPanelView(discord.ui.View):
             color=discord.Color.blurple()
         )
 
-        # 複数項目式の場合は要件を埋め込みに追加
-        if panel.get("mode") == "multi":
-            req_lines = []
-            for r in panel.get("requirements", []):
-                emoji = r.get("emoji", "📝")
-                req_lines.append(f"{emoji} **{r['name']}**\n　{r.get('description', '') or '説明なし'}")
-            if req_lines:
-                embed.add_field(
-                    name="📋 要件一覧",
-                    value="\n\n".join(req_lines)[:1024],
-                    inline=False
-                )
-
-        view = TicketRequirementSelectView(self.cog, self.panel_id, panel)
+        # ポップアップ式セレクトを表示
+        view = TicketPopupSelectView(self.cog, self.panel_id, panel)
         await interaction.response.send_message(
             embed=embed,
             view=view,
@@ -1349,18 +1343,21 @@ class TicketPanelView(discord.ui.View):
         )
 
 
-# =========================================================
-# TICKET REQUIREMENT SELECT (セレクト → モーダル)
-# =========================================================
-
-class TicketRequirementSelectView(discord.ui.View):
+class TicketPopupSelectView(discord.ui.View):
+    """
+    ポップアップ式のセレクトメニュー。
+    画像のように「Please choose your payment method.」等の
+    プレースホルダー付きセレクトを表示する。
+    """
     def __init__(self, cog, panel_id, panel):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
         self.panel = panel
 
-        requirements = panel.get("requirements") or [{"name": "その他", "description": "", "emoji": "📝"}]
+        requirements = panel.get("requirements") or [
+            {"name": "その他", "description": "", "emoji": "📝", "placeholder": "Please choose an option."}
+        ]
 
         options = []
         for req in requirements[:25]:
@@ -1374,12 +1371,16 @@ class TicketRequirementSelectView(discord.ui.View):
                 emoji=emoji[:1] if emoji else None
             ))
 
+        # 最初の要件のプレースホルダーを使用
+        placeholder = requirements[0].get("placeholder", "Please choose an option.")
+
+        self.select.placeholder = placeholder[:150]
         self.select.options = options
 
     @discord.ui.select(
-        placeholder="要件を選択してください",
+        placeholder="Please choose an option.",
         options=[],
-        custom_id="ticket_requirement_select"
+        custom_id="ticket_popup_select"
     )
     async def select(self, interaction, select):
         requirement_name = select.values[0]
@@ -2373,6 +2374,99 @@ class AntiraidSettingView(discord.ui.View):
 
 
 # =========================================================
+# 荒らし対策 検知アクション (BAN / KICK / TIMEOUT)
+# =========================================================
+
+class AntiraidPunishView(discord.ui.View):
+    def __init__(self, member, reason):
+        super().__init__(timeout=300)
+        self.member = member
+        self.reason = reason
+
+    async def interaction_check(self, interaction):
+        if not interaction.user.guild_permissions.kick_members and \
+           not interaction.user.guild_permissions.ban_members and \
+           not interaction.user.guild_permissions.moderate_members:
+            await interaction.response.send_message(
+                "この操作にはモデレーション権限が必要です。",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="BAN", style=discord.ButtonStyle.danger, emoji="🔨")
+    async def ban_button(self, interaction, button):
+        try:
+            await self.member.ban(reason=f"Anti-raid: {self.reason} / by {interaction.user}")
+            await interaction.response.send_message(
+                f"{self.member.mention} をBANしました。",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("BANできません。権限を確認してください。", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"BANに失敗しました: {e}", ephemeral=True)
+
+    @discord.ui.button(label="KICK", style=discord.ButtonStyle.danger, emoji="👢")
+    async def kick_button(self, interaction, button):
+        try:
+            await self.member.kick(reason=f"Anti-raid: {self.reason} / by {interaction.user}")
+            await interaction.response.send_message(
+                f"{self.member.mention} をKICKしました。",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("KICKできません。権限を確認してください。", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"KICKに失敗しました: {e}", ephemeral=True)
+
+    @discord.ui.button(label="TIMEOUT", style=discord.ButtonStyle.primary, emoji="⏳")
+    async def timeout_button(self, interaction, button):
+        view = TimeoutDurationView(self.member, self.reason)
+        await interaction.response.send_message(
+            "TIMEOUT期間を選択してください。",
+            view=view,
+            ephemeral=True
+        )
+
+
+class TimeoutDurationView(discord.ui.View):
+    def __init__(self, member, reason):
+        super().__init__(timeout=120)
+        self.member = member
+        self.reason = reason
+
+    async def apply_timeout(self, interaction, seconds):
+        try:
+            until = discord.utils.utcnow() + datetime.timedelta(seconds=seconds)
+            await self.member.timeout(until, reason=f"Anti-raid: {self.reason} / by {interaction.user}")
+            await interaction.response.send_message(
+                f"{self.member.mention} を {seconds}秒間 TIMEOUT にしました。",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("TIMEOUTできません。権限を確認してください。", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"TIMEOUTに失敗しました: {e}", ephemeral=True)
+
+    @discord.ui.button(label="5分", style=discord.ButtonStyle.secondary)
+    async def t5m(self, interaction, button):
+        await self.apply_timeout(interaction, 5 * 60)
+
+    @discord.ui.button(label="10分", style=discord.ButtonStyle.secondary)
+    async def t10m(self, interaction, button):
+        await self.apply_timeout(interaction, 10 * 60)
+
+    @discord.ui.button(label="1時間", style=discord.ButtonStyle.secondary)
+    async def t1h(self, interaction, button):
+        await self.apply_timeout(interaction, 60 * 60)
+
+    @discord.ui.button(label="1週間", style=discord.ButtonStyle.secondary)
+    async def t1w(self, interaction, button):
+        await self.apply_timeout(interaction, 7 * 24 * 60 * 60)
+
+
+# =========================================================
 # 固定メッセージ
 # =========================================================
 
@@ -2392,7 +2486,6 @@ class FixedMessageModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         try:
             msg = await self.channel.send(self.text_input.value)
-            # 画像は別途ファイルとして送信できるように、固定メッセージデータに保存
             data = load_fixed_message_data()
             gid = str(interaction.guild.id)
             if gid not in data:
@@ -2400,7 +2493,7 @@ class FixedMessageModal(discord.ui.Modal):
             data[gid][str(msg.id)] = {
                 "channel_id": self.channel.id,
                 "text": self.text_input.value,
-                "file_path": None  # 画像ファイルパスは後で設定可能
+                "file_path": None
             }
             save_fixed_message_data(data)
             await interaction.followup.send(
@@ -2466,7 +2559,6 @@ class AutoReactionModal(discord.ui.Modal):
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
-        # チャンネル解決
         channel = None
         raw = self.channel_input.value.strip()
         if raw.startswith("<#") and raw.endswith(">"):
@@ -2512,7 +2604,6 @@ class AutoReactionRemoveSelect(discord.ui.Select):
             return
         removed = []
         for val in self.values:
-            # val は "チャンネルID:絵文字" 形式
             cid, emoji = val.split(":", 1)
             if cid in data[gid] and emoji in data[gid][cid]:
                 data[gid][cid].remove(emoji)
@@ -2543,7 +2634,6 @@ class SlashCog(commands.Cog):
         self.ended_giveaways = {}
         self.vouch_panels = {}
         self.status_panels = {}
-        # チケットパネルはJSONから復元
         self.ticket_panels = load_ticket_panel_data()
 
     async def refresh_status(self, panel):
@@ -2796,7 +2886,6 @@ class SlashCog(commands.Cog):
 
         file = None
         if image:
-            # 画像をファイルとして添付
             file = await image.to_file()
             embed.set_image(url=f"attachment://{image.filename}")
 
@@ -3078,7 +3167,7 @@ class SlashCog(commands.Cog):
             "**チケットパネルの作成方式を選択してください。**\n\n"
             "・**1ボタン式**：シンプルに1つのボタンでチケットを作成します。\n"
             "・**複数項目から選ぶ式**：ユーザーが要件を選択してチケットを作成します。\n"
-            "　要件ごとに絵文字を設定でき、パネルの下に一覧表示されます。",
+            "　要件ごとに絵文字とセレクトのプレースホルダー文言を設定できます。",
             view=view,
             ephemeral=True
         )
@@ -3498,33 +3587,6 @@ class SlashCog(commands.Cog):
         if not message.guild:
             return
 
-        data = load_auto_reaction_data()
-        gid = str(message.guild.id)
-        if gid not in data:
-            return
-
-        cid = str(message.channel.id)
-        if cid not in data[gid]:
-            return
-
-        for emoji in data[gid][cid]:
-            try:
-                await message.add_reaction(emoji)
-            except discord.HTTPException:
-                pass
-
-    # -----------------------------------------------------
-    # 荒らし対策イベント
-    # -----------------------------------------------------
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        # 自動リアクションと同じイベント内で処理
-        if message.author.bot:
-            return
-        if not message.guild:
-            return
-
         # 自動リアクション
         data_ar = load_auto_reaction_data()
         gid = str(message.guild.id)
@@ -3537,11 +3599,11 @@ class SlashCog(commands.Cog):
 
         # 荒らし対策
         antiraid = load_antiraid_data()
-        gid = str(message.guild.id)
         if gid not in antiraid:
             return
 
         settings = antiraid[gid]
+
         # 除外ユーザー/ロール
         if message.author.id in settings.get("ignore_user_ids", []):
             return
@@ -3552,38 +3614,66 @@ class SlashCog(commands.Cog):
         # リンク検知
         if settings.get("link_enabled"):
             if re.search(r"https?://\S+", message.content):
-                try:
-                    await message.delete()
-                    await message.channel.send(
-                        f"{message.author.mention} リンクの送信は禁止されています。",
-                        delete_after=5
-                    )
-                except discord.HTTPException:
-                    pass
+                await self._handle_antiraid_detection(
+                    message,
+                    "リンク検知しました。",
+                    "リンクの送信は禁止されています。"
+                )
                 return
 
-        # 連投スパム検知（簡易：同一ユーザーが3秒以内に3通以上）
+        # 連投スパム検知
         if settings.get("spam_enabled"):
-            # 簡易実装：直近のメッセージを取得して判定
             try:
                 recent = []
                 async for msg in message.channel.history(limit=10, before=message):
                     if msg.author.id == message.author.id:
                         recent.append(msg)
                 if len(recent) >= 2:
-                    # 直近2件との時間差が3秒以内
                     now = message.created_at.timestamp()
                     if now - recent[0].created_at.timestamp() < 3:
-                        try:
-                            await message.delete()
-                            await message.channel.send(
-                                f"{message.author.mention} 連投スパムを検知しました。",
-                                delete_after=5
-                            )
-                        except discord.HTTPException:
-                            pass
+                        await self._handle_antiraid_detection(
+                            message,
+                            "連投スパムを検知しました。",
+                            "連投は禁止されています。"
+                        )
             except discord.HTTPException:
                 pass
+
+    async def _handle_antiraid_detection(self, message, title, description):
+        """荒らし対策の検知アクション"""
+        try:
+            # 該当メッセージを削除
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+
+            # 埋め込みで返信 + メンション
+            embed = discord.Embed(
+                title=f"🚨 {title}",
+                description=(
+                    f"{message.author.mention}\n\n"
+                    f"{description}\n\n"
+                    f"**メッセージ内容:**\n"
+                    f"```{message.content[:1000]}```"
+                ),
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"User ID: {message.author.id}")
+
+            view = AntiraidPunishView(
+                message.author,
+                f"{title} / メッセージID: {message.id}"
+            )
+
+            await message.channel.send(
+                content=message.author.mention,
+                embed=embed,
+                view=view
+            )
+        except Exception as e:
+            print(f"_handle_antiraid_detection error: {e}")
 
     # -----------------------------------------------------
     # 入室・退室イベント
