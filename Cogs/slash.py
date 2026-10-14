@@ -1759,10 +1759,14 @@ class VouchView(discord.ui.View):
 
 
 # =========================================================
-# STATUS PANEL (スタッフ複数対応)
+# STATUS PANEL (スタッフ複数対応・メンション対応)
 # =========================================================
 
 def status_embed(guild, staff_list):
+    """
+    メンションは埋め込みの description に書く必要がある。
+    （フィールド名ではメンションが展開されないため）
+    """
     colors = {
         "対応不可": discord.Color.red(),
         "対応遅延": discord.Color.orange(),
@@ -1785,20 +1789,19 @@ def status_embed(guild, staff_list):
         embed.description = "登録されているスタッフがいません。"
         return embed
 
+    lines = []
     for staff in staff_list:
         member = guild.get_member(staff["user_id"])
         mention = member.mention if member else f"<@{staff['user_id']}>"
-        embed.add_field(
-            name=mention,
-            value=(
-                f"現在の状態\n"
-                f"{staff['emoji']} {staff['status']}\n"
-                f"一言\n"
-                f"{staff['message'] or '設定なし'}"
-            ),
-            inline=False
+        lines.append(
+            f"{mention}\n"
+            f"現在の状態\n"
+            f"{staff['emoji']} {staff['status']}\n"
+            f"一言\n"
+            f"{staff['message'] or '設定なし'}"
         )
 
+    embed.description = "\n\n".join(lines)
     return embed
 
 
@@ -1850,13 +1853,18 @@ class StatusMessageModal(discord.ui.Modal):
 
 
 class StatusSelectView(discord.ui.View):
+    """
+    /対応状況 実行時に表示される、
+    自分の対応状況を変更するセレクト + 一言変更ボタン。
+    画像のUIをそのまま維持する。
+    """
     def __init__(self, cog, panel_id):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
 
     @discord.ui.select(
-        placeholder="自分の対応状況を変更",
+        placeholder="対応状況を変更",
         options=[
             discord.SelectOption(label="対応不可", value="対応不可", emoji="🔴"),
             discord.SelectOption(label="対応遅延", value="対応遅延", emoji="🟠"),
@@ -2510,20 +2518,21 @@ class FixedMessageRemoveSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         data = load_fixed_message_data()
         gid = str(interaction.guild.id)
-        msg_id = self.values[0]
-        if gid in data and msg_id in data[gid]:
-            info = data[gid].pop(msg_id)
+        cid = self.values[0]
+        if gid in data and cid in data[gid]:
+            info = data[gid].pop(cid)
             save_fixed_message_data(data)
             channel = interaction.guild.get_channel(info["channel_id"])
             if isinstance(channel, discord.TextChannel):
-                try:
-                    msg = await channel.fetch_message(int(msg_id))
-                    await msg.delete()
-                except discord.HTTPException:
-                    pass
+                if info.get("message_id"):
+                    try:
+                        msg = await channel.fetch_message(info["message_id"])
+                        await msg.delete()
+                    except discord.HTTPException:
+                        pass
             await interaction.response.edit_message(content="固定メッセージを解除しました。", view=None)
         else:
-            await interaction.response.edit_message(content="メッセージが見つかりません。", view=None)
+            await interaction.response.edit_message(content="設定が見つかりません。", view=None)
 
 
 class FixedMessageRemoveView(discord.ui.View):
@@ -3186,7 +3195,6 @@ class SlashCog(commands.Cog):
         data[gid] = staff_ids
         save_status_staff_data(data)
 
-        # 既存パネルにも反映
         for panel in self.status_panels.values():
             if panel.get("channel_id") and \
                interaction.guild.get_channel(panel["channel_id"]):
@@ -3242,7 +3250,6 @@ class SlashCog(commands.Cog):
         data[gid] = staff_ids
         save_status_staff_data(data)
 
-        # 既存パネルからも削除
         for panel in self.status_panels.values():
             panel["staff"] = [s for s in panel["staff"] if s["user_id"] != user.id]
             await self.refresh_status(panel)
@@ -3375,33 +3382,23 @@ class SlashCog(commands.Cog):
     )
     @app_commands.describe(
         channel="対象チャンネル",
-        text="固定メッセージ本文",
-        image="画像ファイル（自分のPCから選択・任意）"
+        text="固定メッセージ本文"
     )
     async def fixed_message(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
-        text: str,
-        image: discord.Attachment = None
+        text: str
     ):
         await interaction.response.defer(ephemeral=True)
-
-        file_path = None
-        image_filename = None
-        if image:
-            # 保存せず、ファイル名だけ保持して送信時に添付
-            file_path = await image.to_file()
-            image_filename = image.filename
 
         data = load_fixed_message_data()
         gid = str(interaction.guild.id)
         if gid not in data:
             data[gid] = {}
 
-        # 既存の固定メッセージを削除
         old = data[gid].get(str(channel.id))
-        if old:
+        if old and old.get("message_id"):
             old_channel = interaction.guild.get_channel(old["channel_id"])
             if isinstance(old_channel, discord.TextChannel):
                 try:
@@ -3413,21 +3410,13 @@ class SlashCog(commands.Cog):
         data[gid][str(channel.id)] = {
             "channel_id": channel.id,
             "text": text,
-            "image_filename": image_filename,
             "message_id": None,
             "last_trigger_user_id": None,
         }
         save_fixed_message_data(data)
 
-        # 画像ファイルは保存できないため、初回は送信しない
-        # メッセージが送信されたタイミングで添付し直すには、
-        # 画像を保存する必要があるため、ここではテキストのみ送信
         try:
-            if file_path:
-                # 添付ファイルを送信（ファイルオブジェクトは使い捨て）
-                msg = await channel.send(text, file=file_path)
-            else:
-                msg = await channel.send(text)
+            msg = await channel.send(text)
             data[gid][str(channel.id)]["message_id"] = msg.id
             save_fixed_message_data(data)
         except discord.HTTPException as e:
@@ -3734,12 +3723,11 @@ class SlashCog(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-        # 固定メッセージ（チャンネルにメッセージが送信されたら、Botが固定メッセージを最新に保つ）
+        # 固定メッセージ
         fixed_data = load_fixed_message_data()
         if gid in fixed_data and str(message.channel.id) in fixed_data[gid]:
             info = fixed_data[gid][str(message.channel.id)]
 
-            # 前回のBot固定メッセージを削除
             if info.get("message_id"):
                 try:
                     old_msg = await message.channel.fetch_message(info["message_id"])
@@ -3747,7 +3735,6 @@ class SlashCog(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-            # 新しい固定メッセージを送信
             try:
                 new_msg = await message.channel.send(info["text"])
                 info["message_id"] = new_msg.id
