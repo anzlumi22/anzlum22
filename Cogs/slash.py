@@ -35,6 +35,7 @@ FIXED_MESSAGE_DATA_FILE = "fixed_message_data.json"
 AUTO_REACTION_DATA_FILE = "auto_reaction_data.json"
 TICKET_PANEL_DATA_FILE = "ticket_panel_data.json"
 STATUS_STAFF_DATA_FILE = "status_staff_data.json"
+STATUS_PANEL_DATA_FILE = "status_panel_data.json"
 
 
 # =========================================================
@@ -154,6 +155,14 @@ def load_status_staff_data():
 
 def save_status_staff_data(data):
     save_json(STATUS_STAFF_DATA_FILE, data)
+
+
+def load_status_panel_data():
+    return load_json(STATUS_PANEL_DATA_FILE)
+
+
+def save_status_panel_data(data):
+    save_json(STATUS_PANEL_DATA_FILE, data)
 
 
 def format_account_age(created_at: datetime.datetime):
@@ -1229,7 +1238,7 @@ class TicketSetupObjectSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET PANEL (ポップアップ式セレクト)
+# TICKET PANEL
 # =========================================================
 
 class TicketCloseView(discord.ui.View):
@@ -1759,13 +1768,13 @@ class VouchView(discord.ui.View):
 
 
 # =========================================================
-# STATUS PANEL (スタッフ複数対応・メンション対応)
+# STATUS PANEL (スタッフ複数対応・メンション大きく・状態太字)
 # =========================================================
 
 def status_embed(guild, staff_list):
     """
-    メンションは埋め込みの description に書く必要がある。
-    （フィールド名ではメンションが展開されないため）
+    メンションを # 見出しで大きく表示し、
+    状態を ** ** で太字表示する。
     """
     colors = {
         "対応不可": discord.Color.red(),
@@ -1794,9 +1803,9 @@ def status_embed(guild, staff_list):
         member = guild.get_member(staff["user_id"])
         mention = member.mention if member else f"<@{staff['user_id']}>"
         lines.append(
-            f"{mention}\n"
+            f"# {mention}\n"
             f"現在の状態\n"
-            f"{staff['emoji']} {staff['status']}\n"
+            f"**{staff['emoji']} {staff['status']}**\n"
             f"一言\n"
             f"{staff['message'] or '設定なし'}"
         )
@@ -1854,14 +1863,19 @@ class StatusMessageModal(discord.ui.Modal):
 
 class StatusSelectView(discord.ui.View):
     """
-    /対応状況 実行時に表示される、
+    対応状況パネルの下に常時表示される、
     自分の対応状況を変更するセレクト + 一言変更ボタン。
-    画像のUIをそのまま維持する。
+    チャンネルを見ている全員から見える。
+    各スタッフは自分の分だけ変更可能。
     """
     def __init__(self, cog, panel_id):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.cog = cog
         self.panel_id = panel_id
+
+        # panel_id を custom_id に含めて複数パネル対応
+        self.select.custom_id = f"status_select_{panel_id}"
+        self.message_button.custom_id = f"status_message_{panel_id}"
 
     @discord.ui.select(
         placeholder="対応状況を変更",
@@ -1870,7 +1884,7 @@ class StatusSelectView(discord.ui.View):
             discord.SelectOption(label="対応遅延", value="対応遅延", emoji="🟠"),
             discord.SelectOption(label="対応可能", value="対応可能", emoji="🟢"),
         ],
-        custom_id="status_self_select"
+        custom_id="status_select_default"
     )
     async def select(self, interaction, select):
         panel = self.cog.status_panels.get(self.panel_id)
@@ -1915,7 +1929,7 @@ class StatusSelectView(discord.ui.View):
     @discord.ui.button(
         label="✏️ 一言変更",
         style=discord.ButtonStyle.primary,
-        custom_id="status_self_message"
+        custom_id="status_message_default"
     )
     async def message_button(self, interaction, button):
         panel = self.cog.status_panels.get(self.panel_id)
@@ -2508,7 +2522,7 @@ class TimeoutDurationView(discord.ui.View):
 
 
 # =========================================================
-# 固定メッセージ (最新を常に1つだけ保持)
+# 固定メッセージ
 # =========================================================
 
 class FixedMessageRemoveSelect(discord.ui.Select):
@@ -2641,7 +2655,7 @@ class SlashCog(commands.Cog):
         self.active_giveaways = {}
         self.ended_giveaways = {}
         self.vouch_panels = {}
-        self.status_panels = {}
+        self.status_panels = load_status_panel_data()
         self.ticket_panels = load_ticket_panel_data()
 
     async def refresh_status(self, panel):
@@ -3085,7 +3099,7 @@ class SlashCog(commands.Cog):
         await interaction.channel.send(embed=embed, view=view)
 
     # -----------------------------------------------------
-    # /対応状況 (スタッフ複数表示)
+    # /対応状況
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -3141,21 +3155,26 @@ class SlashCog(commands.Cog):
             "staff": staff_list,
         }
 
+        # パネル本体にセレクト + ボタンを付けて投稿（全員から見える）
         view = StatusSelectView(self, panel_id)
 
-        await interaction.response.send_message(
-            "ステータスパネルを作成しました。\n"
-            "下のメニューから自分の対応状況を変更できます。",
-            view=view,
-            ephemeral=True
-        )
-
         panel_message = await interaction.channel.send(
-            embed=status_embed(interaction.guild, staff_list)
+            embed=status_embed(interaction.guild, staff_list),
+            view=view
         )
 
         panel["message_id"] = panel_message.id
         self.status_panels[panel_id] = panel
+
+        # 永続化
+        data = load_status_panel_data()
+        data[panel_id] = panel
+        save_status_panel_data(data)
+
+        await interaction.response.send_message(
+            "ステータスパネルを作成しました。",
+            ephemeral=True
+        )
 
     # -----------------------------------------------------
     # /対応状況スタッフ追加
