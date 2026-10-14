@@ -30,6 +30,10 @@ def is_allowed():
 
 MEMBER_LOG_DATA_FILE = "member_log_data.json"
 ROLE_PANEL_DATA_FILE = "role_panel_data.json"
+ANTIRAID_DATA_FILE = "antiraid_data.json"
+FIXED_MESSAGE_DATA_FILE = "fixed_message_data.json"
+AUTO_REACTION_DATA_FILE = "auto_reaction_data.json"
+TICKET_PANEL_DATA_FILE = "ticket_panel_data.json"
 
 
 # =========================================================
@@ -80,34 +84,67 @@ async def respond_error(interaction, message):
         await interaction.response.send_message(message, ephemeral=True)
 
 
-def load_member_log_data():
-    if os.path.exists(MEMBER_LOG_DATA_FILE):
-        with open(MEMBER_LOG_DATA_FILE, "r", encoding="utf-8") as f:
+def load_json(path):
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
                 return {}
     return {}
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def load_member_log_data():
+    return load_json(MEMBER_LOG_DATA_FILE)
 
 
 def save_member_log_data(data):
-    with open(MEMBER_LOG_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    save_json(MEMBER_LOG_DATA_FILE, data)
 
 
 def load_role_panel_data():
-    if os.path.exists(ROLE_PANEL_DATA_FILE):
-        with open(ROLE_PANEL_DATA_FILE, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-    return {}
+    return load_json(ROLE_PANEL_DATA_FILE)
 
 
 def save_role_panel_data(data):
-    with open(ROLE_PANEL_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    save_json(ROLE_PANEL_DATA_FILE, data)
+
+
+def load_antiraid_data():
+    return load_json(ANTIRAID_DATA_FILE)
+
+
+def save_antiraid_data(data):
+    save_json(ANTIRAID_DATA_FILE, data)
+
+
+def load_fixed_message_data():
+    return load_json(FIXED_MESSAGE_DATA_FILE)
+
+
+def save_fixed_message_data(data):
+    save_json(FIXED_MESSAGE_DATA_FILE, data)
+
+
+def load_auto_reaction_data():
+    return load_json(AUTO_REACTION_DATA_FILE)
+
+
+def save_auto_reaction_data(data):
+    save_json(AUTO_REACTION_DATA_FILE, data)
+
+
+def load_ticket_panel_data():
+    return load_json(TICKET_PANEL_DATA_FILE)
+
+
+def save_ticket_panel_data(data):
+    save_json(TICKET_PANEL_DATA_FILE, data)
 
 
 def format_account_age(created_at: datetime.datetime):
@@ -583,7 +620,606 @@ class VerifyRoleSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET
+# TICKET (新・対話式セットアップ)
+# =========================================================
+
+class TicketSetupModeView(discord.ui.View):
+    """チケットの作成方式を選択"""
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "このセットアップは実行者本人のみ操作できます。",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="1ボタン式（シンプル）",
+        style=discord.ButtonStyle.primary,
+        emoji="🎫"
+    )
+    async def simple_mode(self, interaction, button):
+        view = TicketSetupSimpleView(self.cog, self.user_id)
+        await interaction.response.edit_message(
+            content=(
+                "**1ボタン式**を選択しました。\n"
+                "以下の項目を設定してください。\n"
+                "（ボタン名・カテゴリー・メンションロールは必須です）"
+            ),
+            view=view
+        )
+
+    @discord.ui.button(
+        label="複数項目から選ぶ式",
+        style=discord.ButtonStyle.success,
+        emoji="📋"
+    )
+    async def multi_mode(self, interaction, button):
+        view = TicketSetupMultiView(self.cog, self.user_id)
+        await interaction.response.edit_message(
+            content=(
+                "**複数項目から選ぶ式**を選択しました。\n"
+                "チケットパネルの下に要件を表示し、ユーザーが選択できるようにします。\n"
+                "まずは基本設定を行います。"
+            ),
+            view=view
+        )
+
+
+class TicketSetupSimpleView(discord.ui.View):
+    """1ボタン式のセットアップ"""
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.user_id = user_id
+        self.settings = {
+            "mode": "simple",
+            "button_label": "🎫 チケットを作成",
+            "max_tickets": 1,
+            "mention_role_id": None,
+            "category_id": None,
+            "delete_permission": "admin",
+            "panel_title": "購入・お問い合わせ",
+            "panel_description": "チケットを開きましたらスタッフが対応するまでお待ちください。",
+            "embed_title": None,
+            "embed_description": None,
+            "welcome_message": None,
+            "archive_channel_id": None,
+            "requirements": [{"name": "その他", "description": "", "emoji": "📝"}],
+        }
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "このセットアップは実行者本人のみ操作できます。",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="ボタン名を設定", style=discord.ButtonStyle.secondary, emoji="✏️")
+    async def set_button_label(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupTextModal(self, "button_label", "ボタン名", "チケット作成ボタンの名前")
+        )
+
+    @discord.ui.button(label="カテゴリーを設定", style=discord.ButtonStyle.secondary, emoji="📁")
+    async def set_category(self, interaction, button):
+        categories = interaction.guild.categories[:25]
+        if not categories:
+            await interaction.response.send_message("カテゴリーがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in categories]
+        await interaction.response.edit_message(
+            content="チケットを作成するカテゴリーを選択してください。",
+            view=TicketSetupObjectSelectView(self, "category_id", options)
+        )
+
+    @discord.ui.button(label="メンションロールを設定", style=discord.ButtonStyle.secondary, emoji="🔔")
+    async def set_mention_role(self, interaction, button):
+        roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed][:25]
+        if not roles:
+            await interaction.response.send_message("ロールがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles]
+        await interaction.response.edit_message(
+            content="チケット作成時にメンションするロールを選択してください。",
+            view=TicketSetupObjectSelectView(self, "mention_role_id", options)
+        )
+
+    @discord.ui.button(label="最大チケット数を設定", style=discord.ButtonStyle.secondary, emoji="🔢")
+    async def set_max_tickets(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupTextModal(self, "max_tickets", "最大チケット数", "1〜10の数字")
+        )
+
+    @discord.ui.button(label="削除権限を設定", style=discord.ButtonStyle.secondary, emoji="🔒")
+    async def set_delete_permission(self, interaction, button):
+        options = [
+            discord.SelectOption(label="管理者のみ", value="admin"),
+            discord.SelectOption(label="全員", value="everyone"),
+        ]
+        await interaction.response.edit_message(
+            content="チケット削除権限を選択してください。",
+            view=TicketSetupObjectSelectView(self, "delete_permission", options)
+        )
+
+    @discord.ui.button(label="パネルタイトル/説明を設定", style=discord.ButtonStyle.secondary, emoji="📝")
+    async def set_panel_text(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupPanelTextModal(self)
+        )
+
+    @discord.ui.button(label="埋め込み設定", style=discord.ButtonStyle.secondary, emoji="🖼️")
+    async def set_embed(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupEmbedModal(self)
+        )
+
+    @discord.ui.button(label="ウェルカムメッセージ", style=discord.ButtonStyle.secondary, emoji="👋")
+    async def set_welcome(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupTextModal(self, "welcome_message", "ウェルカムメッセージ", "チケット作成後のメッセージ")
+        )
+
+    @discord.ui.button(label="アーカイブチャンネル", style=discord.ButtonStyle.secondary, emoji="📦")
+    async def set_archive(self, interaction, button):
+        channels = interaction.guild.text_channels[:25]
+        if not channels:
+            await interaction.response.send_message("テキストチャンネルがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in channels]
+        await interaction.response.edit_message(
+            content="アーカイブ（削除ログ）チャンネルを選択してください。",
+            view=TicketSetupObjectSelectView(self, "archive_channel_id", options)
+        )
+
+    @discord.ui.button(label="✅ パネルを作成", style=discord.ButtonStyle.success, emoji="✅")
+    async def create_panel(self, interaction, button):
+        s = self.settings
+        if not s["category_id"]:
+            await interaction.response.send_message("カテゴリーを設定してください。", ephemeral=True)
+            return
+        if not s["mention_role_id"]:
+            await interaction.response.send_message("メンションロールを設定してください。", ephemeral=True)
+            return
+
+        panel_id = uuid.uuid4().hex[:10]
+        self.cog.ticket_panels[panel_id] = {
+            "id": panel_id,
+            "mode": "simple",
+            "button_label": s["button_label"],
+            "max_tickets": s["max_tickets"],
+            "mention_role_id": s["mention_role_id"],
+            "embed_title": s["embed_title"],
+            "embed_description": s["embed_description"],
+            "welcome_message": s["welcome_message"],
+            "delete_permission": s["delete_permission"],
+            "category_id": s["category_id"],
+            "archive_channel_id": s["archive_channel_id"],
+            "channel_id": interaction.channel.id,
+            "message_id": None,
+            "panel_title": s["panel_title"],
+            "panel_description": s["panel_description"],
+            "requirements": s["requirements"],
+            "access_role_ids": [],
+            "access_user_ids": [],
+        }
+
+        embed = discord.Embed(
+            title="🎫 チケット",
+            description=f"下のボタンからチケットを作成できます。\n1人につき最大 {s['max_tickets']} 件まで。",
+            color=discord.Color.blurple()
+        )
+
+        view = TicketPanelView(self.cog, panel_id)
+        view.create_button.label = s["button_label"]
+
+        await interaction.response.send_message("チケットパネルを作成しました。", ephemeral=True)
+        message = await interaction.channel.send(embed=embed, view=view)
+        self.cog.ticket_panels[panel_id]["message_id"] = message.id
+
+        # 永続化
+        data = load_ticket_panel_data()
+        data[panel_id] = self.cog.ticket_panels[panel_id]
+        save_ticket_panel_data(data)
+
+        self.stop()
+
+
+class TicketSetupMultiView(discord.ui.View):
+    """複数項目から選ぶ式のセットアップ"""
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.user_id = user_id
+        self.settings = {
+            "mode": "multi",
+            "button_label": "🎫 チケットを作成",
+            "max_tickets": 1,
+            "mention_role_id": None,
+            "category_id": None,
+            "delete_permission": "admin",
+            "panel_title": "購入・お問い合わせ",
+            "panel_description": "チケットを開きましたらスタッフが対応するまでお待ちください。",
+            "embed_title": None,
+            "embed_description": None,
+            "welcome_message": None,
+            "archive_channel_id": None,
+            "requirements": [],
+        }
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "このセットアップは実行者本人のみ操作できます。",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="基本設定", style=discord.ButtonStyle.primary, emoji="⚙️")
+    async def basic_settings(self, interaction, button):
+        await interaction.response.send_message(
+            "基本設定を行います。各項目を設定してください。",
+            view=TicketSetupMultiBasicView(self),
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="要件を追加", style=discord.ButtonStyle.success, emoji="➕")
+    async def add_requirement(self, interaction, button):
+        if len(self.settings["requirements"]) >= 25:
+            await interaction.response.send_message("要件は最大25個までです。", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            TicketRequirementModal(self)
+        )
+
+    @discord.ui.button(label="要件を確認", style=discord.ButtonStyle.secondary, emoji="📋")
+    async def view_requirements(self, interaction, button):
+        reqs = self.settings["requirements"]
+        if not reqs:
+            await interaction.response.send_message("要件がまだありません。", ephemeral=True)
+            return
+        lines = [f"{r.get('emoji', '📝')} **{r['name']}** - {r.get('description', '')}" for r in reqs]
+        embed = discord.Embed(
+            title="登録済みの要件",
+            description="\n".join(lines),
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="要件を削除", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def remove_requirement(self, interaction, button):
+        reqs = self.settings["requirements"]
+        if not reqs:
+            await interaction.response.send_message("要件がまだありません。", ephemeral=True)
+            return
+        options = [
+            discord.SelectOption(
+                label=r["name"][:100],
+                value=str(i),
+                emoji=r.get("emoji", "📝")[:1] if r.get("emoji") else None
+            )
+            for i, r in enumerate(reqs[:25])
+        ]
+        await interaction.response.edit_message(
+            content="削除する要件を選択してください。",
+            view=TicketRequirementRemoveView(self, options)
+        )
+
+    @discord.ui.button(label="✅ パネルを作成", style=discord.ButtonStyle.success, emoji="✅")
+    async def create_panel(self, interaction, button):
+        s = self.settings
+        if not s["category_id"]:
+            await interaction.response.send_message("カテゴリーを設定してください。", ephemeral=True)
+            return
+        if not s["mention_role_id"]:
+            await interaction.response.send_message("メンションロールを設定してください。", ephemeral=True)
+            return
+        if not s["requirements"]:
+            await interaction.response.send_message("要件を1つ以上追加してください。", ephemeral=True)
+            return
+
+        panel_id = uuid.uuid4().hex[:10]
+        self.cog.ticket_panels[panel_id] = {
+            "id": panel_id,
+            "mode": "multi",
+            "button_label": s["button_label"],
+            "max_tickets": s["max_tickets"],
+            "mention_role_id": s["mention_role_id"],
+            "embed_title": s["embed_title"],
+            "embed_description": s["embed_description"],
+            "welcome_message": s["welcome_message"],
+            "delete_permission": s["delete_permission"],
+            "category_id": s["category_id"],
+            "archive_channel_id": s["archive_channel_id"],
+            "channel_id": interaction.channel.id,
+            "message_id": None,
+            "panel_title": s["panel_title"],
+            "panel_description": s["panel_description"],
+            "requirements": s["requirements"],
+            "access_role_ids": [],
+            "access_user_ids": [],
+        }
+
+        # パネル本体の埋め込み
+        embed = discord.Embed(
+            title="🎫 チケット",
+            description=f"下のボタンからチケットを作成できます。\n1人につき最大 {s['max_tickets']} 件まで。",
+            color=discord.Color.blurple()
+        )
+
+        # 要件一覧を埋め込みの下に表示
+        req_lines = []
+        for r in s["requirements"]:
+            emoji = r.get("emoji", "📝")
+            req_lines.append(f"{emoji} **{r['name']}**\n　{r.get('description', '') or '説明なし'}")
+
+        if req_lines:
+            embed.add_field(
+                name="📋 要件一覧",
+                value="\n\n".join(req_lines)[:1024],
+                inline=False
+            )
+
+        view = TicketPanelView(self.cog, panel_id)
+        view.create_button.label = s["button_label"]
+
+        await interaction.response.send_message("チケットパネルを作成しました。", ephemeral=True)
+        message = await interaction.channel.send(embed=embed, view=view)
+        self.cog.ticket_panels[panel_id]["message_id"] = message.id
+
+        data = load_ticket_panel_data()
+        data[panel_id] = self.cog.ticket_panels[panel_id]
+        save_ticket_panel_data(data)
+
+        self.stop()
+
+
+class TicketSetupMultiBasicView(discord.ui.View):
+    """複数項目式の基本設定"""
+    def __init__(self, parent: TicketSetupMultiView):
+        super().__init__(timeout=600)
+        self.parent = parent
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.parent.user_id:
+            await interaction.response.send_message(
+                "このセットアップは実行者本人のみ操作できます。",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="ボタン名", style=discord.ButtonStyle.secondary, emoji="✏️")
+    async def set_button_label(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupTextModal(self.parent, "button_label", "ボタン名", "チケット作成ボタンの名前")
+        )
+
+    @discord.ui.button(label="カテゴリー", style=discord.ButtonStyle.secondary, emoji="📁")
+    async def set_category(self, interaction, button):
+        categories = interaction.guild.categories[:25]
+        if not categories:
+            await interaction.response.send_message("カテゴリーがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in categories]
+        await interaction.response.edit_message(
+            content="カテゴリーを選択してください。",
+            view=TicketSetupObjectSelectView(self.parent, "category_id", options, back_view=self)
+        )
+
+    @discord.ui.button(label="メンションロール", style=discord.ButtonStyle.secondary, emoji="🔔")
+    async def set_mention_role(self, interaction, button):
+        roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed][:25]
+        if not roles:
+            await interaction.response.send_message("ロールがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles]
+        await interaction.response.edit_message(
+            content="メンションロールを選択してください。",
+            view=TicketSetupObjectSelectView(self.parent, "mention_role_id", options, back_view=self)
+        )
+
+    @discord.ui.button(label="最大チケット数", style=discord.ButtonStyle.secondary, emoji="🔢")
+    async def set_max_tickets(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupTextModal(self.parent, "max_tickets", "最大チケット数", "1〜10の数字")
+        )
+
+    @discord.ui.button(label="削除権限", style=discord.ButtonStyle.secondary, emoji="🔒")
+    async def set_delete_permission(self, interaction, button):
+        options = [
+            discord.SelectOption(label="管理者のみ", value="admin"),
+            discord.SelectOption(label="全員", value="everyone"),
+        ]
+        await interaction.response.edit_message(
+            content="削除権限を選択してください。",
+            view=TicketSetupObjectSelectView(self.parent, "delete_permission", options, back_view=self)
+        )
+
+    @discord.ui.button(label="パネルタイトル/説明", style=discord.ButtonStyle.secondary, emoji="📝")
+    async def set_panel_text(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupPanelTextModal(self.parent)
+        )
+
+    @discord.ui.button(label="埋め込み設定", style=discord.ButtonStyle.secondary, emoji="🖼️")
+    async def set_embed(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupEmbedModal(self.parent)
+        )
+
+    @discord.ui.button(label="ウェルカムメッセージ", style=discord.ButtonStyle.secondary, emoji="👋")
+    async def set_welcome(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketSetupTextModal(self.parent, "welcome_message", "ウェルカムメッセージ", "チケット作成後のメッセージ")
+        )
+
+    @discord.ui.button(label="アーカイブチャンネル", style=discord.ButtonStyle.secondary, emoji="📦")
+    async def set_archive(self, interaction, button):
+        channels = interaction.guild.text_channels[:25]
+        if not channels:
+            await interaction.response.send_message("テキストチャンネルがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in channels]
+        await interaction.response.edit_message(
+            content="アーカイブチャンネルを選択してください。",
+            view=TicketSetupObjectSelectView(self.parent, "archive_channel_id", options, back_view=self)
+        )
+
+    @discord.ui.button(label="戻る", style=discord.ButtonStyle.primary, emoji="↩️")
+    async def back(self, interaction, button):
+        await interaction.response.edit_message(
+            content=(
+                "**複数項目から選ぶ式**の設定画面です。\n"
+                "「基本設定」で詳細を、「要件を追加」で項目を追加してください。"
+            ),
+            view=self.parent
+        )
+
+
+class TicketSetupTextModal(discord.ui.Modal):
+    def __init__(self, setup_view, field, label, placeholder):
+        super().__init__(title=f"設定: {label}")
+        self.setup_view = setup_view
+        self.field = field
+        self.input = discord.ui.TextInput(
+            label=label,
+            placeholder=placeholder,
+            max_length=1000,
+            required=False
+        )
+        self.add_item(self.input)
+
+    async def on_submit(self, interaction):
+        value = self.input.value.strip()
+        if self.field == "max_tickets":
+            try:
+                value = int(value)
+                if value < 1 or value > 10:
+                    raise ValueError
+            except ValueError:
+                await interaction.response.send_message("1〜10の数字で入力してください。", ephemeral=True)
+                return
+        self.setup_view.settings[self.field] = value if value else self.setup_view.settings.get(self.field)
+        await interaction.response.send_message(f"`{self.field}` を更新しました。", ephemeral=True)
+
+
+class TicketSetupPanelTextModal(discord.ui.Modal):
+    def __init__(self, setup_view):
+        super().__init__(title="パネルタイトル/説明")
+        self.setup_view = setup_view
+        self.title_input = discord.ui.TextInput(label="パネルタイトル", required=False, max_length=200)
+        self.desc_input = discord.ui.TextInput(
+            label="パネル説明", style=discord.TextStyle.paragraph, required=False, max_length=1000
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction):
+        if self.title_input.value.strip():
+            self.setup_view.settings["panel_title"] = self.title_input.value.strip()
+        if self.desc_input.value.strip():
+            self.setup_view.settings["panel_description"] = self.desc_input.value.strip()
+        await interaction.response.send_message("パネルタイトル/説明を更新しました。", ephemeral=True)
+
+
+class TicketSetupEmbedModal(discord.ui.Modal):
+    def __init__(self, setup_view):
+        super().__init__(title="チケット埋め込み設定")
+        self.setup_view = setup_view
+        self.title_input = discord.ui.TextInput(label="埋め込みタイトル", required=False, max_length=200)
+        self.desc_input = discord.ui.TextInput(
+            label="埋め込み説明", style=discord.TextStyle.paragraph, required=False, max_length=1000
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction):
+        if self.title_input.value.strip():
+            self.setup_view.settings["embed_title"] = self.title_input.value.strip()
+        if self.desc_input.value.strip():
+            self.setup_view.settings["embed_description"] = self.desc_input.value.strip()
+        await interaction.response.send_message("埋め込み設定を更新しました。", ephemeral=True)
+
+
+class TicketRequirementModal(discord.ui.Modal):
+    def __init__(self, multi_view):
+        super().__init__(title="要件を追加")
+        self.multi_view = multi_view
+        self.name_input = discord.ui.TextInput(label="要件名", placeholder="例: 購入希望", max_length=100, required=True)
+        self.desc_input = discord.ui.TextInput(
+            label="説明", placeholder="例: 商品の購入について", max_length=200, required=False
+        )
+        self.emoji_input = discord.ui.TextInput(
+            label="絵文字", placeholder="例: 🛒", max_length=10, required=False
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.desc_input)
+        self.add_item(self.emoji_input)
+
+    async def on_submit(self, interaction):
+        self.multi_view.settings["requirements"].append({
+            "name": self.name_input.value.strip(),
+            "description": self.desc_input.value.strip() or "",
+            "emoji": self.emoji_input.value.strip() or "📝"
+        })
+        await interaction.response.send_message(
+            f"要件「{self.name_input.value.strip()}」を追加しました。",
+            ephemeral=True
+        )
+
+
+class TicketRequirementRemoveView(discord.ui.View):
+    def __init__(self, multi_view, options):
+        super().__init__(timeout=120)
+        self.multi_view = multi_view
+        self.select.options = options
+
+    @discord.ui.select(placeholder="削除する要件を選択", custom_id="ticket_req_remove")
+    async def select(self, interaction, select):
+        idx = int(select.values[0])
+        reqs = self.multi_view.settings["requirements"]
+        if 0 <= idx < len(reqs):
+            removed = reqs.pop(idx)
+            await interaction.response.edit_message(
+                content=f"要件「{removed['name']}」を削除しました。",
+                view=None
+            )
+        else:
+            await interaction.response.edit_message(content="削除に失敗しました。", view=None)
+
+
+class TicketSetupObjectSelectView(discord.ui.View):
+    def __init__(self, setup_view, field, options, back_view=None):
+        super().__init__(timeout=120)
+        self.setup_view = setup_view
+        self.field = field
+        self.back_view = back_view
+        self.select.options = options
+
+    @discord.ui.select(placeholder="選択してください", custom_id="ticket_setup_object_select")
+    async def select(self, interaction, select):
+        value = select.values[0]
+        if self.field in ("max_tickets",):
+            value = int(value)
+        self.setup_view.settings[self.field] = value
+        await interaction.response.edit_message(
+            content=f"`{self.field}` を更新しました。",
+            view=self.back_view or self.setup_view
+        )
+
+
+# =========================================================
+# TICKET PANEL (既存のパネル表示・作成ロジック)
 # =========================================================
 
 class TicketCloseView(discord.ui.View):
@@ -692,6 +1328,19 @@ class TicketPanelView(discord.ui.View):
             color=discord.Color.blurple()
         )
 
+        # 複数項目式の場合は要件を埋め込みに追加
+        if panel.get("mode") == "multi":
+            req_lines = []
+            for r in panel.get("requirements", []):
+                emoji = r.get("emoji", "📝")
+                req_lines.append(f"{emoji} **{r['name']}**\n　{r.get('description', '') or '説明なし'}")
+            if req_lines:
+                embed.add_field(
+                    name="📋 要件一覧",
+                    value="\n\n".join(req_lines)[:1024],
+                    inline=False
+                )
+
         view = TicketRequirementSelectView(self.cog, self.panel_id, panel)
         await interaction.response.send_message(
             embed=embed,
@@ -711,16 +1360,18 @@ class TicketRequirementSelectView(discord.ui.View):
         self.panel_id = panel_id
         self.panel = panel
 
-        requirements = panel.get("requirements") or [{"name": "その他", "description": ""}]
+        requirements = panel.get("requirements") or [{"name": "その他", "description": "", "emoji": "📝"}]
 
         options = []
         for req in requirements[:25]:
             name = req.get("name", "無題")
             desc = req.get("description", "") or ""
+            emoji = req.get("emoji", "📝")
             options.append(discord.SelectOption(
                 label=name[:100],
                 value=name,
-                description=desc[:100] if desc else None
+                description=desc[:100] if desc else None,
+                emoji=emoji[:1] if emoji else None
             ))
 
         self.select.options = options
@@ -1592,6 +2243,296 @@ class MemberLogSettingView(discord.ui.View):
 
 
 # =========================================================
+# 荒らし対策 (ANTI-RAID)
+# =========================================================
+
+def build_antiraid_embed(guild, data):
+    embed = discord.Embed(
+        title="荒らし対策設定",
+        description=(
+            f"サーバー名: {guild.name} ({guild.id})\n"
+            f"下のドロップダウン（検索可）から各種設定を変更できます。"
+        ),
+        color=discord.Color.red()
+    )
+    embed.add_field(
+        name="連投スパム",
+        value="オン" if data.get("spam_enabled") else "オフ",
+        inline=False
+    )
+    embed.add_field(
+        name="リンク検知",
+        value="オン" if data.get("link_enabled") else "オフ",
+        inline=False
+    )
+    ignore_users = data.get("ignore_user_ids", [])
+    embed.add_field(
+        name="荒らし対策を検知しないメンバー",
+        value="\n".join(f"<@{uid}>" for uid in ignore_users) if ignore_users else "なし",
+        inline=False
+    )
+    ignore_roles = data.get("ignore_role_ids", [])
+    embed.add_field(
+        name="荒らし対策を検知しないロール",
+        value="\n".join(f"<@&{rid}>" for rid in ignore_roles) if ignore_roles else "なし",
+        inline=False
+    )
+    return embed
+
+
+class AntiraidIgnoreUserSelect(discord.ui.UserSelect):
+    def __init__(self, cog):
+        super().__init__(
+            placeholder="🔍 荒らし対策を検知しないメンバー（検索できます）",
+            min_values=0,
+            max_values=25,
+            custom_id="antiraid_ignore_users"
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_antiraid_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {"spam_enabled": False, "link_enabled": False,
+                         "ignore_user_ids": [], "ignore_role_ids": []}
+
+        data[gid]["ignore_user_ids"] = [u.id for u in self.values]
+        save_antiraid_data(data)
+
+        embed = build_antiraid_embed(interaction.guild, data[gid])
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class AntiraidIgnoreRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, cog):
+        super().__init__(
+            placeholder="🔍 荒らし対策を検知しないロール（検索できます）",
+            min_values=0,
+            max_values=25,
+            custom_id="antiraid_ignore_roles"
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_antiraid_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {"spam_enabled": False, "link_enabled": False,
+                         "ignore_user_ids": [], "ignore_role_ids": []}
+
+        data[gid]["ignore_role_ids"] = [r.id for r in self.values]
+        save_antiraid_data(data)
+
+        embed = build_antiraid_embed(interaction.guild, data[gid])
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class AntiraidToggleButton(discord.ui.Button):
+    def __init__(self, cog, toggle_type):
+        self.cog = cog
+        self.toggle_type = toggle_type
+        label = "連投スパム 切替" if toggle_type == "spam" else "リンク検知 切替"
+        super().__init__(label=label, style=discord.ButtonStyle.primary,
+                         custom_id=f"antiraid_toggle_{toggle_type}")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_antiraid_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {"spam_enabled": False, "link_enabled": False,
+                         "ignore_user_ids": [], "ignore_role_ids": []}
+
+        if self.toggle_type == "spam":
+            data[gid]["spam_enabled"] = not data[gid].get("spam_enabled", False)
+        else:
+            data[gid]["link_enabled"] = not data[gid].get("link_enabled", False)
+
+        save_antiraid_data(data)
+        embed = build_antiraid_embed(interaction.guild, data[gid])
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class AntiraidSettingView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.add_item(AntiraidToggleButton(cog, "spam"))
+        self.add_item(AntiraidToggleButton(cog, "link"))
+        self.add_item(AntiraidIgnoreUserSelect(cog))
+        self.add_item(AntiraidIgnoreRoleSelect(cog))
+
+
+# =========================================================
+# 固定メッセージ
+# =========================================================
+
+class FixedMessageModal(discord.ui.Modal):
+    def __init__(self, channel):
+        super().__init__(title="固定メッセージ")
+        self.channel = channel
+        self.text_input = discord.ui.TextInput(
+            label="テキスト",
+            style=discord.TextStyle.paragraph,
+            max_length=2000,
+            required=True
+        )
+        self.add_item(self.text_input)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            msg = await self.channel.send(self.text_input.value)
+            # 画像は別途ファイルとして送信できるように、固定メッセージデータに保存
+            data = load_fixed_message_data()
+            gid = str(interaction.guild.id)
+            if gid not in data:
+                data[gid] = {}
+            data[gid][str(msg.id)] = {
+                "channel_id": self.channel.id,
+                "text": self.text_input.value,
+                "file_path": None  # 画像ファイルパスは後で設定可能
+            }
+            save_fixed_message_data(data)
+            await interaction.followup.send(
+                f"固定メッセージを送信しました: {msg.jump_url}",
+                ephemeral=True
+            )
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"送信に失敗しました: {e}", ephemeral=True)
+
+
+class FixedMessageRemoveSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="解除する固定メッセージを選択", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        data = load_fixed_message_data()
+        gid = str(interaction.guild.id)
+        msg_id = self.values[0]
+        if gid in data and msg_id in data[gid]:
+            info = data[gid].pop(msg_id)
+            save_fixed_message_data(data)
+            channel = interaction.guild.get_channel(info["channel_id"])
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    msg = await channel.fetch_message(int(msg_id))
+                    await msg.delete()
+                except discord.HTTPException:
+                    pass
+            await interaction.response.edit_message(content="固定メッセージを解除しました。", view=None)
+        else:
+            await interaction.response.edit_message(content="メッセージが見つかりません。", view=None)
+
+
+class FixedMessageRemoveView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=120)
+        self.add_item(FixedMessageRemoveSelect(options))
+
+
+# =========================================================
+# 自動リアクション
+# =========================================================
+
+class AutoReactionModal(discord.ui.Modal):
+    def __init__(self, channels, emojis):
+        super().__init__(title="自動リアクション設定")
+        self.channels = channels
+        self.emojis = emojis
+        self.channel_input = discord.ui.TextInput(
+            label="チャンネル（メンションまたはID）",
+            placeholder="例: #一般 または 123456789012345678",
+            required=True,
+            max_length=200
+        )
+        self.emoji_input = discord.ui.TextInput(
+            label="絵文字（カンマ区切りで最大4つ）",
+            placeholder="例: 👍,🎉,😊,🔥",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.channel_input)
+        self.add_item(self.emoji_input)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        # チャンネル解決
+        channel = None
+        raw = self.channel_input.value.strip()
+        if raw.startswith("<#") and raw.endswith(">"):
+            try:
+                channel = interaction.guild.get_channel(int(raw[2:-1]))
+            except ValueError:
+                pass
+        elif raw.isdigit():
+            channel = interaction.guild.get_channel(int(raw))
+        if not channel or not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("チャンネルが見つかりません。", ephemeral=True)
+            return
+
+        emojis = [e.strip() for e in self.emoji_input.value.split(",") if e.strip()]
+        if not emojis:
+            await interaction.followup.send("絵文字を1つ以上指定してください。", ephemeral=True)
+            return
+
+        data = load_auto_reaction_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {}
+        data[gid][str(channel.id)] = emojis
+        save_auto_reaction_data(data)
+
+        await interaction.followup.send(
+            f"チャンネル {channel.mention} に自動リアクションを設定しました。\n"
+            f"絵文字: {' '.join(emojis)}",
+            ephemeral=True
+        )
+
+
+class AutoReactionRemoveSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="解除するチャンネルの絵文字を選択（複数可）",
+                         min_values=1, max_values=25, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        data = load_auto_reaction_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            await interaction.response.edit_message(content="設定がありません。", view=None)
+            return
+        removed = []
+        for val in self.values:
+            # val は "チャンネルID:絵文字" 形式
+            cid, emoji = val.split(":", 1)
+            if cid in data[gid] and emoji in data[gid][cid]:
+                data[gid][cid].remove(emoji)
+                removed.append(emoji)
+                if not data[gid][cid]:
+                    del data[gid][cid]
+        save_auto_reaction_data(data)
+        await interaction.response.edit_message(
+            content=f"以下の自動リアクションを解除しました: {' '.join(removed)}",
+            view=None
+        )
+
+
+class AutoReactionRemoveView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=120)
+        self.add_item(AutoReactionRemoveSelect(options))
+
+
+# =========================================================
 # MAIN COG
 # =========================================================
 
@@ -1602,7 +2543,8 @@ class SlashCog(commands.Cog):
         self.ended_giveaways = {}
         self.vouch_panels = {}
         self.status_panels = {}
-        self.ticket_panels = {}
+        # チケットパネルはJSONから復元
+        self.ticket_panels = load_ticket_panel_data()
 
     async def refresh_status(self, panel):
         channel = self.bot.get_channel(panel["channel_id"])
@@ -1813,19 +2755,19 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /埋め込み送信
+    # /埋め込み送信（画像はファイルアップロード）
     # -----------------------------------------------------
 
     @app_commands.command(
         name="埋め込み送信",
-        description="埋め込みメッセージを送信します"
+        description="埋め込みメッセージを送信します（画像はファイル選択）"
     )
     @app_commands.describe(
         title="埋め込みのタイトル",
         description="埋め込みの説明",
         color="色（例: ff0000、00ff00）",
         footer="フッター",
-        image="画像URL"
+        image="画像ファイル（自分のPCから選択）"
     )
     async def embed(
         self,
@@ -1834,7 +2776,7 @@ class SlashCog(commands.Cog):
         description: str,
         color: str = None,
         footer: str = None,
-        image: str = None
+        image: discord.Attachment = None
     ):
         if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
@@ -1851,14 +2793,21 @@ class SlashCog(commands.Cog):
 
         if footer:
             embed.set_footer(text=footer)
+
+        file = None
         if image:
-            embed.set_image(url=image)
+            # 画像をファイルとして添付
+            file = await image.to_file()
+            embed.set_image(url=f"attachment://{image.filename}")
 
         await interaction.response.send_message(
             "埋め込みを送信しました。",
             ephemeral=True
         )
-        await interaction.channel.send(embed=embed)
+        if file:
+            await interaction.channel.send(embed=embed, file=file)
+        else:
+            await interaction.channel.send(embed=embed)
 
     # -----------------------------------------------------
     # /dm送信
@@ -2109,141 +3058,30 @@ class SlashCog(commands.Cog):
         self.status_panels[panel_id] = panel
 
     # -----------------------------------------------------
-    # /チケット
+    # /チケット（対話式セットアップ開始）
     # -----------------------------------------------------
 
     @app_commands.command(
         name="チケット",
-        description="チケットパネルを作成します"
+        description="チケットパネルを対話形式で作成します"
     )
-    @app_commands.describe(
-        button_label="ボタンの名前",
-        max_tickets="1人が作成できるチケット数",
-        mention_role="チケット作成時にメンションするロール",
-        category="チケットを作成するカテゴリー",
-        delete_permission="削除権限（管理者 or 全員）",
-        panel_title="チケット作成時のパネルタイトル",
-        panel_description="チケット作成時のパネル説明",
-        requirements="要件（カンマ区切り・例: 購入希望:商品の購入について,サポート:サポートが必要な場合）",
-        access_roles="閲覧 + 送信できるロール（メンション・カンマ区切り）",
-        access_users="閲覧 + 送信できる人（メンション・カンマ区切り）",
-        embed_title="チケット埋め込みタイトル（任意）",
-        embed_description="チケット埋め込み説明（任意）",
-        welcome_message="チケット作成後のメッセージ（任意）",
-        archive_channel="削除されたときのログチャンネル（任意）"
-    )
-    @app_commands.choices(
-        delete_permission=[
-            app_commands.Choice(name="管理者", value="admin"),
-            app_commands.Choice(name="全員", value="everyone")
-        ]
-    )
-    async def ticket(
-        self,
-        interaction,
-        button_label: str,
-        max_tickets: app_commands.Range[int, 1, 10],
-        mention_role: discord.Role,
-        category: discord.CategoryChannel,
-        delete_permission: app_commands.Choice[str],
-        panel_title: str = "購入・お問い合わせ",
-        panel_description: str = "チケットを開きましたらスタッフが対応するまでお待ちください。",
-        requirements: str = "購入希望:商品の購入について,サポート:サポートが必要な場合,質問:質問がある場合,その他:その他のお問い合わせ",
-        access_roles: str = None,
-        access_users: str = None,
-        embed_title: str = None,
-        embed_description: str = None,
-        welcome_message: str = None,
-        archive_channel: discord.TextChannel = None
-    ):
-        panel_id = uuid.uuid4().hex[:10]
+    async def ticket(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "サーバー内で使用してください。",
+                ephemeral=True
+            )
+            return
 
-        requirement_list = []
-        for token in requirements.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            if ":" in token:
-                name, desc = token.split(":", 1)
-                requirement_list.append({
-                    "name": name.strip(),
-                    "description": desc.strip()
-                })
-            else:
-                requirement_list.append({
-                    "name": token,
-                    "description": ""
-                })
-
-        if not requirement_list:
-            requirement_list = [{"name": "その他", "description": ""}]
-
-        def parse_role_ids(text):
-            if not text:
-                return []
-            ids = []
-            for token in text.split(","):
-                token = token.strip()
-                if token.startswith("<@&") and token.endswith(">"):
-                    try:
-                        ids.append(int(token[3:-1]))
-                    except ValueError:
-                        pass
-                elif token.isdigit():
-                    ids.append(int(token))
-            return ids
-
-        def parse_user_ids(text):
-            if not text:
-                return []
-            ids = []
-            for token in text.split(","):
-                token = token.strip()
-                if token.startswith("<@") and token.endswith(">"):
-                    try:
-                        ids.append(int(token[2:-1]))
-                    except ValueError:
-                        pass
-                elif token.isdigit():
-                    ids.append(int(token))
-            return ids
-
-        self.ticket_panels[panel_id] = {
-            "id": panel_id,
-            "button_label": button_label,
-            "max_tickets": max_tickets,
-            "mention_role_id": mention_role.id,
-            "embed_title": embed_title,
-            "embed_description": embed_description,
-            "welcome_message": welcome_message,
-            "delete_permission": delete_permission.value,
-            "category_id": category.id,
-            "archive_channel_id": archive_channel.id if archive_channel else None,
-            "channel_id": interaction.channel.id,
-            "message_id": None,
-            "panel_title": panel_title,
-            "panel_description": panel_description,
-            "requirements": requirement_list,
-            "access_role_ids": parse_role_ids(access_roles),
-            "access_user_ids": parse_user_ids(access_users),
-        }
-
-        embed = discord.Embed(
-            title="🎫 チケット",
-            description=f"下のボタンからチケットを作成できます。\n1人につき最大 {max_tickets} 件まで。",
-            color=discord.Color.blurple()
-        )
-
-        view = TicketPanelView(self, panel_id)
-        view.create_button.label = button_label
-
+        view = TicketSetupModeView(self, interaction.user.id)
         await interaction.response.send_message(
-            "チケットパネルを作成しました。",
+            "**チケットパネルの作成方式を選択してください。**\n\n"
+            "・**1ボタン式**：シンプルに1つのボタンでチケットを作成します。\n"
+            "・**複数項目から選ぶ式**：ユーザーが要件を選択してチケットを作成します。\n"
+            "　要件ごとに絵文字を設定でき、パネルの下に一覧表示されます。",
+            view=view,
             ephemeral=True
         )
-
-        message = await interaction.channel.send(embed=embed, view=view)
-        self.ticket_panels[panel_id]["message_id"] = message.id
 
     # -----------------------------------------------------
     # /チケットパネル編集
@@ -2308,6 +3146,151 @@ class SlashCog(commands.Cog):
         view = MemberLogSettingView(self)
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /荒らし対策
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="荒らし対策",
+        description="荒らし対策の設定を行います"
+    )
+    async def antiraid(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_antiraid_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {"spam_enabled": False, "link_enabled": False,
+                         "ignore_user_ids": [], "ignore_role_ids": []}
+            save_antiraid_data(data)
+
+        embed = build_antiraid_embed(interaction.guild, data[gid])
+        view = AntiraidSettingView(self)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /固定メッセージ
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="固定メッセージ",
+        description="固定メッセージを送信します（画像はファイル選択）"
+    )
+    @app_commands.describe(
+        channel="送信先チャンネル",
+        text="メッセージ本文",
+        image="画像ファイル（自分のPCから選択）"
+    )
+    async def fixed_message(
+        self,
+        interaction,
+        channel: discord.TextChannel,
+        text: str,
+        image: discord.Attachment = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        file = None
+        if image:
+            file = await image.to_file()
+        try:
+            if file:
+                msg = await channel.send(text, file=file)
+            else:
+                msg = await channel.send(text)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"送信に失敗しました: {e}", ephemeral=True)
+            return
+
+        data = load_fixed_message_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {}
+        data[gid][str(msg.id)] = {
+            "channel_id": channel.id,
+            "text": text,
+            "image_filename": image.filename if image else None
+        }
+        save_fixed_message_data(data)
+
+        await interaction.followup.send(
+            f"固定メッセージを送信しました: {msg.jump_url}",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
+    # /固定メッセージ解除
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="固定メッセージ解除",
+        description="固定メッセージを選択して解除します"
+    )
+    async def fixed_message_remove(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_fixed_message_data()
+        gid = str(interaction.guild.id)
+        if gid not in data or not data[gid]:
+            return await interaction.response.send_message("固定メッセージがありません。", ephemeral=True)
+
+        options = []
+        for mid, info in list(data[gid].items())[:25]:
+            preview = info["text"][:50] + ("..." if len(info["text"]) > 50 else "")
+            options.append(discord.SelectOption(label=preview, value=mid, description=f"チャンネルID: {info['channel_id']}"))
+
+        view = FixedMessageRemoveView(options)
+        await interaction.response.send_message("解除する固定メッセージを選択してください。", view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /自動リアクション
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="自動リアクション",
+        description="指定チャンネルのメッセージに自動でリアクションします"
+    )
+    async def auto_reaction(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        modal = AutoReactionModal([], [])
+        await interaction.response.send_modal(modal)
+
+    # -----------------------------------------------------
+    # /自動リアクション解除
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="自動リアクション解除",
+        description="自動リアクションを解除します"
+    )
+    async def auto_reaction_remove(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_auto_reaction_data()
+        gid = str(interaction.guild.id)
+        if gid not in data or not data[gid]:
+            return await interaction.response.send_message("自動リアクションが設定されていません。", ephemeral=True)
+
+        options = []
+        for cid, emojis in data[gid].items():
+            channel = interaction.guild.get_channel(int(cid))
+            ch_name = channel.name if channel else cid
+            for e in emojis:
+                options.append(discord.SelectOption(
+                    label=f"#{ch_name} : {e}",
+                    value=f"{cid}:{e}"
+                ))
+
+        if not options:
+            return await interaction.response.send_message("解除できるリアクションがありません。", ephemeral=True)
+
+        view = AutoReactionRemoveView(options)
+        await interaction.response.send_message("解除する絵文字を選択してください（複数可）。", view=view, ephemeral=True)
 
     # -----------------------------------------------------
     # /ロール付与パネル
@@ -2503,6 +3486,104 @@ class SlashCog(commands.Cog):
             pass
         except discord.HTTPException:
             pass
+
+    # -----------------------------------------------------
+    # 自動リアクションイベント
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        if not message.guild:
+            return
+
+        data = load_auto_reaction_data()
+        gid = str(message.guild.id)
+        if gid not in data:
+            return
+
+        cid = str(message.channel.id)
+        if cid not in data[gid]:
+            return
+
+        for emoji in data[gid][cid]:
+            try:
+                await message.add_reaction(emoji)
+            except discord.HTTPException:
+                pass
+
+    # -----------------------------------------------------
+    # 荒らし対策イベント
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # 自動リアクションと同じイベント内で処理
+        if message.author.bot:
+            return
+        if not message.guild:
+            return
+
+        # 自動リアクション
+        data_ar = load_auto_reaction_data()
+        gid = str(message.guild.id)
+        if gid in data_ar and str(message.channel.id) in data_ar[gid]:
+            for emoji in data_ar[gid][str(message.channel.id)]:
+                try:
+                    await message.add_reaction(emoji)
+                except discord.HTTPException:
+                    pass
+
+        # 荒らし対策
+        antiraid = load_antiraid_data()
+        gid = str(message.guild.id)
+        if gid not in antiraid:
+            return
+
+        settings = antiraid[gid]
+        # 除外ユーザー/ロール
+        if message.author.id in settings.get("ignore_user_ids", []):
+            return
+        for role in message.author.roles:
+            if role.id in settings.get("ignore_role_ids", []):
+                return
+
+        # リンク検知
+        if settings.get("link_enabled"):
+            if re.search(r"https?://\S+", message.content):
+                try:
+                    await message.delete()
+                    await message.channel.send(
+                        f"{message.author.mention} リンクの送信は禁止されています。",
+                        delete_after=5
+                    )
+                except discord.HTTPException:
+                    pass
+                return
+
+        # 連投スパム検知（簡易：同一ユーザーが3秒以内に3通以上）
+        if settings.get("spam_enabled"):
+            # 簡易実装：直近のメッセージを取得して判定
+            try:
+                recent = []
+                async for msg in message.channel.history(limit=10, before=message):
+                    if msg.author.id == message.author.id:
+                        recent.append(msg)
+                if len(recent) >= 2:
+                    # 直近2件との時間差が3秒以内
+                    now = message.created_at.timestamp()
+                    if now - recent[0].created_at.timestamp() < 3:
+                        try:
+                            await message.delete()
+                            await message.channel.send(
+                                f"{message.author.mention} 連投スパムを検知しました。",
+                                delete_after=5
+                            )
+                        except discord.HTTPException:
+                            pass
+            except discord.HTTPException:
+                pass
 
     # -----------------------------------------------------
     # 入室・退室イベント
