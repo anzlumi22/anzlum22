@@ -34,6 +34,7 @@ ANTIRAID_DATA_FILE = "antiraid_data.json"
 FIXED_MESSAGE_DATA_FILE = "fixed_message_data.json"
 AUTO_REACTION_DATA_FILE = "auto_reaction_data.json"
 TICKET_PANEL_DATA_FILE = "ticket_panel_data.json"
+STATUS_STAFF_DATA_FILE = "status_staff_data.json"
 
 
 # =========================================================
@@ -145,6 +146,14 @@ def load_ticket_panel_data():
 
 def save_ticket_panel_data(data):
     save_json(TICKET_PANEL_DATA_FILE, data)
+
+
+def load_status_staff_data():
+    return load_json(STATUS_STAFF_DATA_FILE)
+
+
+def save_status_staff_data(data):
+    save_json(STATUS_STAFF_DATA_FILE, data)
 
 
 def format_account_age(created_at: datetime.datetime):
@@ -620,11 +629,10 @@ class VerifyRoleSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET (新・対話式セットアップ)
+# TICKET (対話式セットアップ)
 # =========================================================
 
 class TicketSetupModeView(discord.ui.View):
-    """チケットの作成方式を選択"""
     def __init__(self, cog, user_id):
         super().__init__(timeout=300)
         self.cog = cog
@@ -673,7 +681,6 @@ class TicketSetupModeView(discord.ui.View):
 
 
 class TicketSetupSimpleView(discord.ui.View):
-    """1ボタン式のセットアップ"""
     def __init__(self, cog, user_id):
         super().__init__(timeout=600)
         self.cog = cog
@@ -833,7 +840,6 @@ class TicketSetupSimpleView(discord.ui.View):
 
 
 class TicketSetupMultiView(discord.ui.View):
-    """複数項目から選ぶ式のセットアップ"""
     def __init__(self, cog, user_id):
         super().__init__(timeout=900)
         self.cog = cog
@@ -981,7 +987,6 @@ class TicketSetupMultiView(discord.ui.View):
 
 
 class TicketSetupMultiBasicView(discord.ui.View):
-    """複数項目式の基本設定"""
     def __init__(self, parent: TicketSetupMultiView):
         super().__init__(timeout=600)
         self.parent = parent
@@ -1149,7 +1154,6 @@ class TicketSetupEmbedModal(discord.ui.Modal):
 
 
 class TicketRequirementModal(discord.ui.Modal):
-    """要件追加モーダル（プレースホルダー文言も設定可能）"""
     def __init__(self, multi_view):
         super().__init__(title="要件を追加")
         self.multi_view = multi_view
@@ -1334,7 +1338,6 @@ class TicketPanelView(discord.ui.View):
             color=discord.Color.blurple()
         )
 
-        # ポップアップ式セレクトを表示
         view = TicketPopupSelectView(self.cog, self.panel_id, panel)
         await interaction.response.send_message(
             embed=embed,
@@ -1344,11 +1347,6 @@ class TicketPanelView(discord.ui.View):
 
 
 class TicketPopupSelectView(discord.ui.View):
-    """
-    ポップアップ式のセレクトメニュー。
-    画像のように「Please choose your payment method.」等の
-    プレースホルダー付きセレクトを表示する。
-    """
     def __init__(self, cog, panel_id, panel):
         super().__init__(timeout=300)
         self.cog = cog
@@ -1371,7 +1369,6 @@ class TicketPopupSelectView(discord.ui.View):
                 emoji=emoji[:1] if emoji else None
             ))
 
-        # 最初の要件のプレースホルダーを使用
         placeholder = requirements[0].get("placeholder", "Please choose an option.")
 
         self.select.placeholder = placeholder[:150]
@@ -1762,40 +1759,55 @@ class VouchView(discord.ui.View):
 
 
 # =========================================================
-# STATUS PANEL
+# STATUS PANEL (スタッフ複数対応)
 # =========================================================
 
-def status_embed(panel):
+def status_embed(guild, staff_list):
     colors = {
         "対応不可": discord.Color.red(),
         "対応遅延": discord.Color.orange(),
         "対応可能": discord.Color.green()
     }
 
+    priority = {"対応不可": 0, "対応遅延": 1, "対応可能": 2}
+    if staff_list:
+        worst = min(staff_list, key=lambda s: priority.get(s["status"], 3))
+        color = colors.get(worst["status"], discord.Color.blurple())
+    else:
+        color = discord.Color.blurple()
+
     embed = discord.Embed(
         title="対応状況",
-        description=panel["description"],
-        color=colors[panel["status"]]
+        color=color
     )
 
-    embed.add_field(
-        name="現在の状態",
-        value=f"{panel['emoji']} **{panel['status']}**",
-        inline=False
-    )
-    embed.add_field(
-        name="一言",
-        value=panel["message"] or "設定なし",
-        inline=False
-    )
+    if not staff_list:
+        embed.description = "登録されているスタッフがいません。"
+        return embed
+
+    for staff in staff_list:
+        member = guild.get_member(staff["user_id"])
+        mention = member.mention if member else f"<@{staff['user_id']}>"
+        embed.add_field(
+            name=mention,
+            value=(
+                f"現在の状態\n"
+                f"{staff['emoji']} {staff['status']}\n"
+                f"一言\n"
+                f"{staff['message'] or '設定なし'}"
+            ),
+            inline=False
+        )
+
     return embed
 
 
 class StatusMessageModal(discord.ui.Modal):
-    def __init__(self, cog, panel_id):
+    def __init__(self, cog, panel_id, user_id):
         super().__init__(title="一言を変更")
         self.cog = cog
         self.panel_id = panel_id
+        self.user_id = user_id
 
         self.message_input = discord.ui.TextInput(
             label="一言",
@@ -1807,15 +1819,28 @@ class StatusMessageModal(discord.ui.Modal):
 
     async def on_submit(self, interaction):
         panel = self.cog.status_panels.get(self.panel_id)
-
-        if not panel or interaction.user.id != panel["creator_id"]:
+        if not panel:
             await interaction.response.send_message(
-                "このパネルの作成者だけが変更できます。",
+                "パネルが見つかりません。",
                 ephemeral=True
             )
             return
 
-        panel["message"] = self.message_input.value.strip()
+        staff_list = panel.get("staff", [])
+        target = None
+        for s in staff_list:
+            if s["user_id"] == self.user_id:
+                target = s
+                break
+
+        if not target:
+            await interaction.response.send_message(
+                "あなたはこのパネルのスタッフではありません。",
+                ephemeral=True
+            )
+            return
+
+        target["message"] = self.message_input.value.strip()
         await self.cog.refresh_status(panel)
 
         await interaction.response.send_message(
@@ -1824,77 +1849,85 @@ class StatusMessageModal(discord.ui.Modal):
         )
 
 
-class StatusView(discord.ui.View):
+class StatusSelectView(discord.ui.View):
     def __init__(self, cog, panel_id):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
-        self.status_select.custom_id = f"status_select_{panel_id}"
-        self.message_button.custom_id = f"status_message_{panel_id}"
 
-    async def check_creator(self, interaction):
+    @discord.ui.select(
+        placeholder="自分の対応状況を変更",
+        options=[
+            discord.SelectOption(label="対応不可", value="対応不可", emoji="🔴"),
+            discord.SelectOption(label="対応遅延", value="対応遅延", emoji="🟠"),
+            discord.SelectOption(label="対応可能", value="対応可能", emoji="🟢"),
+        ],
+        custom_id="status_self_select"
+    )
+    async def select(self, interaction, select):
         panel = self.cog.status_panels.get(self.panel_id)
-
         if not panel:
             await interaction.response.send_message(
                 "パネルが見つかりません。",
                 ephemeral=True
             )
-            return False
-
-        if interaction.user.id != panel["creator_id"]:
-            await interaction.response.send_message(
-                "このパネルを変更できるのは作成者本人だけです。",
-                ephemeral=True
-            )
-            return False
-
-        return True
-
-    @discord.ui.select(
-        placeholder="対応状況を変更",
-        options=[
-            discord.SelectOption(
-                label="対応不可", value="対応不可", emoji="🔴"
-            ),
-            discord.SelectOption(
-                label="対応遅延", value="対応遅延", emoji="🟠"
-            ),
-            discord.SelectOption(
-                label="対応可能", value="対応可能", emoji="🟢"
-            )
-        ],
-        custom_id="status_select_default"
-    )
-    async def status_select(self, interaction, select):
-        if not await self.check_creator(interaction):
             return
 
-        panel = self.cog.status_panels[self.panel_id]
-        panel["status"] = select.values[0]
-        panel["emoji"] = {
+        staff_list = panel.get("staff", [])
+        target = None
+        for s in staff_list:
+            if s["user_id"] == interaction.user.id:
+                target = s
+                break
+
+        if not target:
+            await interaction.response.send_message(
+                "あなたはこのパネルのスタッフではありません。\n"
+                "管理者に `/対応状況スタッフ追加` を依頼してください。",
+                ephemeral=True
+            )
+            return
+
+        status = select.values[0]
+        emojis = {
             "対応不可": "🔴",
             "対応遅延": "🟠",
             "対応可能": "🟢"
-        }[panel["status"]]
+        }
+        target["status"] = status
+        target["emoji"] = emojis[status]
 
         await self.cog.refresh_status(panel)
+
         await interaction.response.send_message(
-            f"状態を「{panel['status']}」に変更しました。",
+            f"あなたの状態を「{status}」に変更しました。",
             ephemeral=True
         )
 
     @discord.ui.button(
         label="✏️ 一言変更",
         style=discord.ButtonStyle.primary,
-        custom_id="status_message_default"
+        custom_id="status_self_message"
     )
     async def message_button(self, interaction, button):
-        if not await self.check_creator(interaction):
+        panel = self.cog.status_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        staff_ids = [s["user_id"] for s in panel.get("staff", [])]
+        if interaction.user.id not in staff_ids:
+            await interaction.response.send_message(
+                "あなたはこのパネルのスタッフではありません。",
+                ephemeral=True
+            )
             return
 
         await interaction.response.send_modal(
-            StatusMessageModal(self.cog, self.panel_id)
+            StatusMessageModal(self.cog, self.panel_id, interaction.user.id)
         )
 
 
@@ -2467,42 +2500,8 @@ class TimeoutDurationView(discord.ui.View):
 
 
 # =========================================================
-# 固定メッセージ
+# 固定メッセージ (最新を常に1つだけ保持)
 # =========================================================
-
-class FixedMessageModal(discord.ui.Modal):
-    def __init__(self, channel):
-        super().__init__(title="固定メッセージ")
-        self.channel = channel
-        self.text_input = discord.ui.TextInput(
-            label="テキスト",
-            style=discord.TextStyle.paragraph,
-            max_length=2000,
-            required=True
-        )
-        self.add_item(self.text_input)
-
-    async def on_submit(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            msg = await self.channel.send(self.text_input.value)
-            data = load_fixed_message_data()
-            gid = str(interaction.guild.id)
-            if gid not in data:
-                data[gid] = {}
-            data[gid][str(msg.id)] = {
-                "channel_id": self.channel.id,
-                "text": self.text_input.value,
-                "file_path": None
-            }
-            save_fixed_message_data(data)
-            await interaction.followup.send(
-                f"固定メッセージを送信しました: {msg.jump_url}",
-                ephemeral=True
-            )
-        except discord.HTTPException as e:
-            await interaction.followup.send(f"送信に失敗しました: {e}", ephemeral=True)
-
 
 class FixedMessageRemoveSelect(discord.ui.Select):
     def __init__(self, options):
@@ -2643,7 +2642,7 @@ class SlashCog(commands.Cog):
 
         try:
             message = await channel.fetch_message(panel["message_id"])
-            await message.edit(embed=status_embed(panel))
+            await message.edit(embed=status_embed(channel.guild, panel["staff"]))
         except discord.HTTPException:
             pass
 
@@ -2670,7 +2669,7 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /配布作成 (作成と同時に開始)
+    # /配布作成
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -2763,7 +2762,7 @@ class SlashCog(commands.Cog):
         asyncio.create_task(finish())
 
     # -----------------------------------------------------
-    # /配布終了 (即座に終了して当選者発表)
+    # /配布終了
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -2845,7 +2844,7 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /埋め込み送信（画像はファイルアップロード）
+    # /埋め込み送信
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -3077,32 +3076,28 @@ class SlashCog(commands.Cog):
         await interaction.channel.send(embed=embed, view=view)
 
     # -----------------------------------------------------
-    # /対応状況
+    # /対応状況 (スタッフ複数表示)
     # -----------------------------------------------------
 
     @app_commands.command(
         name="対応状況",
-        description="対応状況パネルを作成します"
+        description="対応状況パネルを表示します"
     )
     @app_commands.describe(
-        description="パネル説明",
-        status="最初の対応状況",
-        message="一言"
-    )
-    @app_commands.choices(
-        status=[
-            app_commands.Choice(name="対応不可", value="対応不可"),
-            app_commands.Choice(name="対応遅延", value="対応遅延"),
-            app_commands.Choice(name="対応可能", value="対応可能")
-        ]
+        description="パネルの説明（任意）"
     )
     async def status(
         self,
-        interaction,
-        description: str = "現在の対応状況です。",
-        status: app_commands.Choice[str] = None,
-        message: str = ""
+        interaction: discord.Interaction,
+        description: str = "現在の対応状況です。"
     ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "サーバー内で使用してください。",
+                ephemeral=True
+            )
+            return
+
         if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
                 "テキストチャンネルで使用してください。",
@@ -3110,44 +3105,155 @@ class SlashCog(commands.Cog):
             )
             return
 
-        selected_status = status.value if status else "対応可能"
-        emojis = {
-            "対応不可": "🔴",
-            "対応遅延": "🟠",
-            "対応可能": "🟢"
-        }
-
         panel_id = uuid.uuid4().hex[:10]
+
+        staff_data = load_status_staff_data()
+        gid = str(interaction.guild.id)
+        staff_ids = staff_data.get(gid, [])
+
+        staff_list = []
+        for uid in staff_ids:
+            member = interaction.guild.get_member(uid)
+            if not member:
+                continue
+            staff_list.append({
+                "user_id": uid,
+                "status": "対応可能",
+                "emoji": "🟢",
+                "message": ""
+            })
 
         panel = {
             "id": panel_id,
             "creator_id": interaction.user.id,
-            "title": "対応状況",
             "description": description,
-            "status": selected_status,
-            "emoji": emojis[selected_status],
-            "message": message,
             "channel_id": interaction.channel.id,
-            "message_id": None
+            "message_id": None,
+            "staff": staff_list,
         }
 
-        view = StatusView(self, panel_id)
+        view = StatusSelectView(self, panel_id)
 
         await interaction.response.send_message(
-            "ステータスパネルを作成しました。",
+            "ステータスパネルを作成しました。\n"
+            "下のメニューから自分の対応状況を変更できます。",
+            view=view,
             ephemeral=True
         )
 
         panel_message = await interaction.channel.send(
-            embed=status_embed(panel),
-            view=view
+            embed=status_embed(interaction.guild, staff_list)
         )
 
         panel["message_id"] = panel_message.id
         self.status_panels[panel_id] = panel
 
     # -----------------------------------------------------
-    # /チケット（対話式セットアップ開始）
+    # /対応状況スタッフ追加
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="対応状況スタッフ追加",
+        description="対応状況パネルに表示するスタッフを追加します"
+    )
+    @app_commands.describe(
+        user="追加するスタッフ"
+    )
+    async def status_staff_add(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "サーバー内で使用してください。",
+                ephemeral=True
+            )
+            return
+
+        data = load_status_staff_data()
+        gid = str(interaction.guild.id)
+        staff_ids = data.get(gid, [])
+
+        if user.id in staff_ids:
+            await interaction.response.send_message(
+                f"{user.mention} は既にスタッフとして登録されています。",
+                ephemeral=True
+            )
+            return
+
+        staff_ids.append(user.id)
+        data[gid] = staff_ids
+        save_status_staff_data(data)
+
+        # 既存パネルにも反映
+        for panel in self.status_panels.values():
+            if panel.get("channel_id") and \
+               interaction.guild.get_channel(panel["channel_id"]):
+                if not any(s["user_id"] == user.id for s in panel["staff"]):
+                    panel["staff"].append({
+                        "user_id": user.id,
+                        "status": "対応可能",
+                        "emoji": "🟢",
+                        "message": ""
+                    })
+                    await self.refresh_status(panel)
+
+        await interaction.response.send_message(
+            f"{user.mention} を対応状況スタッフに追加しました。",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
+    # /対応状況スタッフ削除
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="対応状況スタッフ削除",
+        description="対応状況パネルからスタッフを削除します"
+    )
+    @app_commands.describe(
+        user="削除するスタッフ"
+    )
+    async def status_staff_remove(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "サーバー内で使用してください。",
+                ephemeral=True
+            )
+            return
+
+        data = load_status_staff_data()
+        gid = str(interaction.guild.id)
+        staff_ids = data.get(gid, [])
+
+        if user.id not in staff_ids:
+            await interaction.response.send_message(
+                f"{user.mention} はスタッフとして登録されていません。",
+                ephemeral=True
+            )
+            return
+
+        staff_ids.remove(user.id)
+        data[gid] = staff_ids
+        save_status_staff_data(data)
+
+        # 既存パネルからも削除
+        for panel in self.status_panels.values():
+            panel["staff"] = [s for s in panel["staff"] if s["user_id"] != user.id]
+            await self.refresh_status(panel)
+
+        await interaction.response.send_message(
+            f"{user.mention} を対応状況スタッフから削除しました。",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
+    # /チケット
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -3265,46 +3371,72 @@ class SlashCog(commands.Cog):
 
     @app_commands.command(
         name="固定メッセージ",
-        description="固定メッセージを送信します（画像はファイル選択）"
+        description="固定メッセージを設定します（チャンネルにメッセージが送信されると自動で投稿されます）"
     )
     @app_commands.describe(
-        channel="送信先チャンネル",
-        text="メッセージ本文",
-        image="画像ファイル（自分のPCから選択）"
+        channel="対象チャンネル",
+        text="固定メッセージ本文",
+        image="画像ファイル（自分のPCから選択・任意）"
     )
     async def fixed_message(
         self,
-        interaction,
+        interaction: discord.Interaction,
         channel: discord.TextChannel,
         text: str,
         image: discord.Attachment = None
     ):
         await interaction.response.defer(ephemeral=True)
-        file = None
+
+        file_path = None
+        image_filename = None
         if image:
-            file = await image.to_file()
-        try:
-            if file:
-                msg = await channel.send(text, file=file)
-            else:
-                msg = await channel.send(text)
-        except discord.HTTPException as e:
-            await interaction.followup.send(f"送信に失敗しました: {e}", ephemeral=True)
-            return
+            # 保存せず、ファイル名だけ保持して送信時に添付
+            file_path = await image.to_file()
+            image_filename = image.filename
 
         data = load_fixed_message_data()
         gid = str(interaction.guild.id)
         if gid not in data:
             data[gid] = {}
-        data[gid][str(msg.id)] = {
+
+        # 既存の固定メッセージを削除
+        old = data[gid].get(str(channel.id))
+        if old:
+            old_channel = interaction.guild.get_channel(old["channel_id"])
+            if isinstance(old_channel, discord.TextChannel):
+                try:
+                    old_msg = await old_channel.fetch_message(old["message_id"])
+                    await old_msg.delete()
+                except discord.HTTPException:
+                    pass
+
+        data[gid][str(channel.id)] = {
             "channel_id": channel.id,
             "text": text,
-            "image_filename": image.filename if image else None
+            "image_filename": image_filename,
+            "message_id": None,
+            "last_trigger_user_id": None,
         }
         save_fixed_message_data(data)
 
+        # 画像ファイルは保存できないため、初回は送信しない
+        # メッセージが送信されたタイミングで添付し直すには、
+        # 画像を保存する必要があるため、ここではテキストのみ送信
+        try:
+            if file_path:
+                # 添付ファイルを送信（ファイルオブジェクトは使い捨て）
+                msg = await channel.send(text, file=file_path)
+            else:
+                msg = await channel.send(text)
+            data[gid][str(channel.id)]["message_id"] = msg.id
+            save_fixed_message_data(data)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"送信に失敗しました: {e}", ephemeral=True)
+            return
+
         await interaction.followup.send(
-            f"固定メッセージを送信しました: {msg.jump_url}",
+            f"固定メッセージを設定しました。\n"
+            f"このチャンネルにメッセージが送信されると、Botが自動で固定メッセージを投稿します。",
             ephemeral=True
         )
 
@@ -3314,7 +3446,7 @@ class SlashCog(commands.Cog):
 
     @app_commands.command(
         name="固定メッセージ解除",
-        description="固定メッセージを選択して解除します"
+        description="固定メッセージを解除します"
     )
     async def fixed_message_remove(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -3323,12 +3455,17 @@ class SlashCog(commands.Cog):
         data = load_fixed_message_data()
         gid = str(interaction.guild.id)
         if gid not in data or not data[gid]:
-            return await interaction.response.send_message("固定メッセージがありません。", ephemeral=True)
+            return await interaction.response.send_message("固定メッセージが設定されていません。", ephemeral=True)
 
         options = []
-        for mid, info in list(data[gid].items())[:25]:
+        for cid, info in list(data[gid].items())[:25]:
+            channel = interaction.guild.get_channel(int(cid))
+            ch_name = channel.name if channel else cid
             preview = info["text"][:50] + ("..." if len(info["text"]) > 50 else "")
-            options.append(discord.SelectOption(label=preview, value=mid, description=f"チャンネルID: {info['channel_id']}"))
+            options.append(discord.SelectOption(
+                label=f"#{ch_name}: {preview}",
+                value=cid
+            ))
 
         view = FixedMessageRemoveView(options)
         await interaction.response.send_message("解除する固定メッセージを選択してください。", view=view, ephemeral=True)
@@ -3577,7 +3714,7 @@ class SlashCog(commands.Cog):
             pass
 
     # -----------------------------------------------------
-    # 自動リアクションイベント
+    # 自動リアクション & 荒らし対策 & 固定メッセージ イベント
     # -----------------------------------------------------
 
     @commands.Cog.listener()
@@ -3597,6 +3734,29 @@ class SlashCog(commands.Cog):
                 except discord.HTTPException:
                     pass
 
+        # 固定メッセージ（チャンネルにメッセージが送信されたら、Botが固定メッセージを最新に保つ）
+        fixed_data = load_fixed_message_data()
+        if gid in fixed_data and str(message.channel.id) in fixed_data[gid]:
+            info = fixed_data[gid][str(message.channel.id)]
+
+            # 前回のBot固定メッセージを削除
+            if info.get("message_id"):
+                try:
+                    old_msg = await message.channel.fetch_message(info["message_id"])
+                    await old_msg.delete()
+                except discord.HTTPException:
+                    pass
+
+            # 新しい固定メッセージを送信
+            try:
+                new_msg = await message.channel.send(info["text"])
+                info["message_id"] = new_msg.id
+                info["last_trigger_user_id"] = message.author.id
+                fixed_data[gid][str(message.channel.id)] = info
+                save_fixed_message_data(fixed_data)
+            except discord.HTTPException:
+                pass
+
         # 荒らし対策
         antiraid = load_antiraid_data()
         if gid not in antiraid:
@@ -3604,14 +3764,12 @@ class SlashCog(commands.Cog):
 
         settings = antiraid[gid]
 
-        # 除外ユーザー/ロール
         if message.author.id in settings.get("ignore_user_ids", []):
             return
         for role in message.author.roles:
             if role.id in settings.get("ignore_role_ids", []):
                 return
 
-        # リンク検知
         if settings.get("link_enabled"):
             if re.search(r"https?://\S+", message.content):
                 await self._handle_antiraid_detection(
@@ -3621,7 +3779,6 @@ class SlashCog(commands.Cog):
                 )
                 return
 
-        # 連投スパム検知
         if settings.get("spam_enabled"):
             try:
                 recent = []
@@ -3640,15 +3797,12 @@ class SlashCog(commands.Cog):
                 pass
 
     async def _handle_antiraid_detection(self, message, title, description):
-        """荒らし対策の検知アクション"""
         try:
-            # 該当メッセージを削除
             try:
                 await message.delete()
             except discord.HTTPException:
                 pass
 
-            # 埋め込みで返信 + メンション
             embed = discord.Embed(
                 title=f"🚨 {title}",
                 description=(
