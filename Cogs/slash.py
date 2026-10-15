@@ -36,6 +36,8 @@ AUTO_REACTION_DATA_FILE = "auto_reaction_data.json"
 TICKET_PANEL_DATA_FILE = "ticket_panel_data.json"
 STATUS_STAFF_DATA_FILE = "status_staff_data.json"
 STATUS_PANEL_DATA_FILE = "status_panel_data.json"
+INVITE_CAMPAIGN_DATA_FILE = "invite_campaign_data.json"
+PERIODIC_MESSAGE_DATA_FILE = "periodic_message_data.json"
 
 
 # =========================================================
@@ -163,6 +165,22 @@ def load_status_panel_data():
 
 def save_status_panel_data(data):
     save_json(STATUS_PANEL_DATA_FILE, data)
+
+
+def load_invite_campaign_data():
+    return load_json(INVITE_CAMPAIGN_DATA_FILE)
+
+
+def save_invite_campaign_data(data):
+    save_json(INVITE_CAMPAIGN_DATA_FILE, data)
+
+
+def load_periodic_message_data():
+    return load_json(PERIODIC_MESSAGE_DATA_FILE)
+
+
+def save_periodic_message_data(data):
+    save_json(PERIODIC_MESSAGE_DATA_FILE, data)
 
 
 def format_account_age(created_at: datetime.datetime):
@@ -1338,21 +1356,27 @@ class TicketPanelView(discord.ui.View):
             )
             return
 
-        title = panel.get("panel_title") or "購入・お問い合わせ"
-        description = panel.get("panel_description") or "チケットを開きましたらスタッフが対応するまでお待ちください。"
-
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
-        )
-
+        # パネルメッセージ自体を編集して、ボタンをセレクトに置き換える
         view = TicketPopupSelectView(self.cog, self.panel_id, panel)
-        await interaction.response.send_message(
-            embed=embed,
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.edit_message(view=view)
+
+
+class TicketPopupBackView(discord.ui.View):
+    def __init__(self, cog, panel_id, panel):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel = panel
+
+    @discord.ui.button(
+        label="↩️ 戻る",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ticket_popup_back"
+    )
+    async def back_button(self, interaction, button):
+        view = TicketPanelView(self.cog, self.panel_id)
+        view.create_button.label = self.panel.get("button_label", "🎫 チケットを作成")
+        await interaction.response.edit_message(view=view)
 
 
 class TicketPopupSelectView(discord.ui.View):
@@ -1383,13 +1407,40 @@ class TicketPopupSelectView(discord.ui.View):
         self.select.placeholder = placeholder[:150]
         self.select.options = options
 
-    @discord.ui.select(
-        placeholder="Please choose an option.",
-        options=[],
-        custom_id="ticket_popup_select"
-    )
-    async def select(self, interaction, select):
-        requirement_name = select.values[0]
+        # 戻るボタンを追加
+        self.add_item(TicketPopupBackButton(cog, panel_id, panel))
+
+
+class TicketPopupBackButton(discord.ui.Button):
+    def __init__(self, cog, panel_id, panel):
+        super().__init__(
+            label="↩️ 戻る",
+            style=discord.ButtonStyle.secondary,
+            custom_id="ticket_popup_back_btn"
+        )
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel = panel
+
+    async def callback(self, interaction):
+        view = TicketPanelView(self.cog, self.panel_id)
+        view.create_button.label = self.panel.get("button_label", "🎫 チケットを作成")
+        await interaction.response.edit_message(view=view)
+
+
+class TicketPopupSelect(discord.ui.Select):
+    def __init__(self, cog, panel_id, panel, options, placeholder):
+        super().__init__(
+            placeholder=placeholder,
+            options=options,
+            custom_id="ticket_popup_select"
+        )
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel = panel
+
+    async def callback(self, interaction):
+        requirement_name = self.values[0]
 
         requirement_desc = ""
         for req in self.panel.get("requirements", []):
@@ -1402,6 +1453,36 @@ class TicketPopupSelectView(discord.ui.View):
             requirement_name, requirement_desc
         )
         await interaction.response.send_modal(modal)
+
+
+# TicketPopupSelectView を正しく再定義（上で定義したものを上書き）
+class TicketPopupSelectView(discord.ui.View):
+    def __init__(self, cog, panel_id, panel):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel = panel
+
+        requirements = panel.get("requirements") or [
+            {"name": "その他", "description": "", "emoji": "📝", "placeholder": "Please choose an option."}
+        ]
+
+        options = []
+        for req in requirements[:25]:
+            name = req.get("name", "無題")
+            desc = req.get("description", "") or ""
+            emoji = req.get("emoji", "📝")
+            options.append(discord.SelectOption(
+                label=name[:100],
+                value=name,
+                description=desc[:100] if desc else None,
+                emoji=emoji[:1] if emoji else None
+            ))
+
+        placeholder = requirements[0].get("placeholder", "Please choose an option.")
+
+        self.add_item(TicketPopupSelect(cog, panel_id, panel, options, placeholder[:150]))
+        self.add_item(TicketPopupBackButton(cog, panel_id, panel))
 
 
 class TicketDetailModal(discord.ui.Modal):
@@ -1768,14 +1849,10 @@ class VouchView(discord.ui.View):
 
 
 # =========================================================
-# STATUS PANEL (スタッフ複数対応・メンション大きく・状態太字)
+# STATUS PANEL
 # =========================================================
 
 def status_embed(guild, staff_list):
-    """
-    メンションを # 見出しで大きく表示し、
-    状態を ** ** で太字表示する。
-    """
     colors = {
         "対応不可": discord.Color.red(),
         "対応遅延": discord.Color.orange(),
@@ -1862,18 +1939,11 @@ class StatusMessageModal(discord.ui.Modal):
 
 
 class StatusSelectView(discord.ui.View):
-    """
-    対応状況パネルの下に常時表示される、
-    自分の対応状況を変更するセレクト + 一言変更ボタン。
-    チャンネルを見ている全員から見える。
-    各スタッフは自分の分だけ変更可能。
-    """
     def __init__(self, cog, panel_id):
         super().__init__(timeout=None)
         self.cog = cog
         self.panel_id = panel_id
 
-        # panel_id を custom_id に含めて複数パネル対応
         self.select.custom_id = f"status_select_{panel_id}"
         self.message_button.custom_id = f"status_message_{panel_id}"
 
@@ -2429,7 +2499,7 @@ class AntiraidSettingView(discord.ui.View):
 
 
 # =========================================================
-# 荒らし対策 検知アクション (BAN / KICK / TIMEOUT)
+# 荒らし対策 検知アクション
 # =========================================================
 
 class AntiraidPunishView(discord.ui.View):
@@ -2556,61 +2626,104 @@ class FixedMessageRemoveView(discord.ui.View):
 
 
 # =========================================================
-# 自動リアクション
+# 自動リアクション（会話形式）
 # =========================================================
 
-class AutoReactionModal(discord.ui.Modal):
-    def __init__(self, channels, emojis):
-        super().__init__(title="自動リアクション設定")
-        self.channels = channels
-        self.emojis = emojis
-        self.channel_input = discord.ui.TextInput(
-            label="チャンネル（メンションまたはID）",
-            placeholder="例: #一般 または 123456789012345678",
-            required=True,
-            max_length=200
+def build_auto_reaction_embed(guild, data):
+    embed = discord.Embed(
+        title="自動リアクション設定",
+        description=(
+            f"サーバー名: {guild.name} ({guild.id})\n"
+            f"下のドロップダウン（検索可）から各種設定を変更できます。"
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.add_field(
+        name="自動リアクション",
+        value="オン" if data else "オフ",
+        inline=False
+    )
+
+    if data:
+        lines = []
+        for cid, emojis in data.items():
+            channel = guild.get_channel(int(cid))
+            ch_name = channel.mention if channel else f"<#{cid}>"
+            lines.append(f"{ch_name} → {' '.join(emojis)}")
+        embed.add_field(
+            name="リアクションするチャンネル",
+            value="\n".join(lines)[:1024] if lines else "なし",
+            inline=False
         )
+    else:
+        embed.add_field(
+            name="リアクションするチャンネル",
+            value="なし",
+            inline=False
+        )
+
+    return embed
+
+
+class AutoReactionChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, cog, index):
+        self.cog = cog
+        self.index = index
+        super().__init__(
+            placeholder=f"🔍 リアクションチャンネル（検索できます）" if index == 0 else f"🔍 リアクションチャンネル{index + 1}",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            custom_id=f"auto_reaction_channel_{index}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        # チャンネル選択後に絵文字をモーダルで入力
+        modal = AutoReactionEmojiModal(self.cog, self.values[0].id)
+        await interaction.response.send_modal(modal)
+
+
+class AutoReactionEmojiModal(discord.ui.Modal):
+    def __init__(self, cog, channel_id):
+        super().__init__(title="絵文字を設定")
+        self.cog = cog
+        self.channel_id = channel_id
         self.emoji_input = discord.ui.TextInput(
             label="絵文字（カンマ区切りで最大4つ）",
             placeholder="例: 👍,🎉,😊,🔥",
             required=True,
             max_length=200
         )
-        self.add_item(self.channel_input)
         self.add_item(self.emoji_input)
 
     async def on_submit(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        channel = None
-        raw = self.channel_input.value.strip()
-        if raw.startswith("<#") and raw.endswith(">"):
-            try:
-                channel = interaction.guild.get_channel(int(raw[2:-1]))
-            except ValueError:
-                pass
-        elif raw.isdigit():
-            channel = interaction.guild.get_channel(int(raw))
-        if not channel or not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send("チャンネルが見つかりません。", ephemeral=True)
-            return
-
         emojis = [e.strip() for e in self.emoji_input.value.split(",") if e.strip()]
         if not emojis:
-            await interaction.followup.send("絵文字を1つ以上指定してください。", ephemeral=True)
+            await interaction.response.send_message("絵文字を1つ以上指定してください。", ephemeral=True)
             return
 
         data = load_auto_reaction_data()
         gid = str(interaction.guild.id)
         if gid not in data:
             data[gid] = {}
-        data[gid][str(channel.id)] = emojis
+        data[gid][str(self.channel_id)] = emojis
         save_auto_reaction_data(data)
 
-        await interaction.followup.send(
-            f"チャンネル {channel.mention} に自動リアクションを設定しました。\n"
-            f"絵文字: {' '.join(emojis)}",
-            ephemeral=True
-        )
+        embed = build_auto_reaction_embed(interaction.guild, data[gid])
+        view = AutoReactionSettingView(self.cog)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class AutoReactionSettingView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=300)
+        self.cog = cog
+        # 3つまでチャンネルセレクトを表示
+        for i in range(3):
+            self.add_item(AutoReactionChannelSelect(cog, i))
 
 
 class AutoReactionRemoveSelect(discord.ui.Select):
@@ -2646,6 +2759,246 @@ class AutoReactionRemoveView(discord.ui.View):
 
 
 # =========================================================
+# 招待キャンペーン
+# =========================================================
+
+class InviteCampaignView(discord.ui.View):
+    def __init__(self, cog, campaign_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.campaign_id = campaign_id
+        self.create_link.custom_id = f"invite_create_{campaign_id}"
+        self.participants.custom_id = f"invite_participants_{campaign_id}"
+        self.ranking.custom_id = f"invite_ranking_{campaign_id}"
+
+    @discord.ui.button(label="🔗 招待リンク作成", style=discord.ButtonStyle.primary)
+    async def create_link(self, interaction, button):
+        data = load_invite_campaign_data()
+        campaign = data.get(self.campaign_id)
+        if not campaign or not campaign.get("active"):
+            await interaction.response.send_message("このキャンペーンは終了しています。", ephemeral=True)
+            return
+
+        # すでに作成済みのリンクがあればそれを返す
+        user_links = campaign.setdefault("user_links", {})
+        uid = str(interaction.user.id)
+        if uid in user_links:
+            invite_url = user_links[uid]
+        else:
+            try:
+                target_channel = interaction.guild.get_channel(campaign["channel_id"])
+                if not isinstance(target_channel, discord.TextChannel):
+                    target_channel = interaction.channel
+                invite = await target_channel.create_invite(
+                    max_age=0,
+                    max_uses=0,
+                    unique=True,
+                    reason=f"Invite campaign {self.campaign_id} by {interaction.user}"
+                )
+                invite_url = invite.url
+                user_links[uid] = invite_url
+                # 招待コードとユーザーの紐付けも保存
+                campaign.setdefault("invite_map", {})[invite.code] = uid
+                save_invite_campaign_data(data)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(f"招待リンクの作成に失敗しました: {e}", ephemeral=True)
+                return
+
+        await interaction.response.send_message(
+            f"あなた専用の招待リンクです。\n\n{invite_url}",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="👤 現在の参加人数", style=discord.ButtonStyle.secondary)
+    async def participants(self, interaction, button):
+        data = load_invite_campaign_data()
+        campaign = data.get(self.campaign_id)
+        if not campaign:
+            await interaction.response.send_message("キャンペーンが見つかりません。", ephemeral=True)
+            return
+
+        uid = str(interaction.user.id)
+        counts = campaign.get("counts", {})
+        my_count = counts.get(uid, 0)
+
+        # 現在の参加人数 = キャンペーン開始以降に参加したユニーク人数
+        total_joins = campaign.get("total_joins", 0)
+
+        # 1位になるまでの招待数
+        max_count = max(counts.values()) if counts else 0
+        needed = max(0, max_count - my_count + 1) if max_count > 0 else 0
+
+        embed = discord.Embed(
+            title="あなたの招待状況",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="招待した人数", value=f"{my_count}人", inline=False)
+        embed.add_field(name="現在の参加人数", value=f"{total_joins}人", inline=False)
+        embed.add_field(name="1位になるまでの招待数", value=f"{needed}回", inline=False)
+        embed.set_footer(text="有効条件: 招待された人がサーバーに現在も在籍していること")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🏆 ランキング", style=discord.ButtonStyle.success)
+    async def ranking(self, interaction, button):
+        data = load_invite_campaign_data()
+        campaign = data.get(self.campaign_id)
+        if not campaign:
+            await interaction.response.send_message("キャンペーンが見つかりません。", ephemeral=True)
+            return
+
+        counts = campaign.get("counts", {})
+        if not counts:
+            await interaction.response.send_message("まだ招待実績がありません。", ephemeral=True)
+            return
+
+        sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+
+        lines = []
+        for i, (uid, cnt) in enumerate(sorted_counts[:10], start=1):
+            member = interaction.guild.get_member(int(uid))
+            name = member.mention if member else f"<@{uid}>"
+            lines.append(f"{i}位 - {name} {cnt}回")
+
+        embed = discord.Embed(
+            title="🏆 招待ランキング",
+            description="\n".join(lines),
+            color=discord.Color.gold()
+        )
+
+        # 自分の順位
+        uid = str(interaction.user.id)
+        my_count = counts.get(uid, 0)
+        my_rank = 0
+        for i, (u, c) in enumerate(sorted_counts, start=1):
+            if u == uid:
+                my_rank = i
+                break
+
+        if my_rank > 0:
+            member = interaction.guild.get_member(int(uid))
+            name = member.mention if member else f"<@{uid}>"
+            embed.add_field(
+                name="自分の成績",
+                value=f"{my_rank}位 - {name} {my_count}回",
+                inline=False
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class InviteCampaignStopSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="停止するキャンペーンを選択", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        data = load_invite_campaign_data()
+        cid = self.values[0]
+        campaign = data.get(cid)
+        if not campaign:
+            await interaction.response.edit_message(content="キャンペーンが見つかりません。", view=None)
+            return
+        campaign["active"] = False
+        save_invite_campaign_data(data)
+        await interaction.response.edit_message(
+            content=f"キャンペーン「{campaign.get('title', cid)}」を停止しました。",
+            view=None
+        )
+
+
+class InviteCampaignStopView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=120)
+        self.add_item(InviteCampaignStopSelect(options))
+
+
+# =========================================================
+# 定期メッセージ
+# =========================================================
+
+class PeriodicMessageModal(discord.ui.Modal):
+    def __init__(self, cog, channel: discord.TextChannel):
+        super().__init__(title="定期メッセージ設定")
+        self.cog = cog
+        self.channel = channel
+
+        self.text_input = discord.ui.TextInput(
+            label="送信するテキスト",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=2000
+        )
+        self.interval_input = discord.ui.TextInput(
+            label="送信間隔（例: 1m, 1h, 1d, 1w）",
+            placeholder="1m / 1h / 1d / 1w",
+            required=True,
+            max_length=20
+        )
+        self.image_input = discord.ui.TextInput(
+            label="画像URL（任意）",
+            required=False,
+            max_length=500
+        )
+
+        self.add_item(self.text_input)
+        self.add_item(self.interval_input)
+        self.add_item(self.image_input)
+
+    async def on_submit(self, interaction):
+        try:
+            seconds = parse_duration(self.interval_input.value.strip())
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+
+        pm_id = uuid.uuid4().hex[:10]
+        data = load_periodic_message_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {}
+
+        data[gid][pm_id] = {
+            "id": pm_id,
+            "channel_id": self.channel.id,
+            "text": self.text_input.value,
+            "interval": seconds,
+            "image_url": self.image_input.value.strip() or None,
+            "last_sent": 0,
+            "active": True
+        }
+        save_periodic_message_data(data)
+
+        await interaction.response.send_message(
+            f"定期メッセージを設定しました。\n"
+            f"チャンネル: {self.channel.mention}\n"
+            f"間隔: {self.interval_input.value.strip()}",
+            ephemeral=True
+        )
+
+
+class PeriodicMessageRemoveSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="解除する定期メッセージを選択", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        data = load_periodic_message_data()
+        gid = str(interaction.guild.id)
+        pid = self.values[0]
+        if gid in data and pid in data[gid]:
+            data[gid][pid]["active"] = False
+            save_periodic_message_data(data)
+            await interaction.response.edit_message(content="定期メッセージを解除しました。", view=None)
+        else:
+            await interaction.response.edit_message(content="設定が見つかりません。", view=None)
+
+
+class PeriodicMessageRemoveView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=120)
+        self.add_item(PeriodicMessageRemoveSelect(options))
+
+
+# =========================================================
 # MAIN COG
 # =========================================================
 
@@ -2657,6 +3010,16 @@ class SlashCog(commands.Cog):
         self.vouch_panels = {}
         self.status_panels = load_status_panel_data()
         self.ticket_panels = load_ticket_panel_data()
+        self.periodic_tasks = {}
+        self.invite_cache = {}  # guild_id -> {invite_code: uses}
+
+    async def cog_load(self):
+        # 定期メッセージのタスクを復元
+        data = load_periodic_message_data()
+        for gid, items in data.items():
+            for pid, info in items.items():
+                if info.get("active"):
+                    self._start_periodic_task(gid, pid, info)
 
     async def refresh_status(self, panel):
         channel = self.bot.get_channel(panel["channel_id"])
@@ -2668,6 +3031,49 @@ class SlashCog(commands.Cog):
             await message.edit(embed=status_embed(channel.guild, panel["staff"]))
         except discord.HTTPException:
             pass
+
+    def _start_periodic_task(self, gid, pid, info):
+        key = f"{gid}:{pid}"
+        if key in self.periodic_tasks:
+            return
+
+        async def runner():
+            while True:
+                data = load_periodic_message_data()
+                cur = data.get(gid, {}).get(pid)
+                if not cur or not cur.get("active"):
+                    break
+                interval = cur["interval"]
+                now = time.time()
+                last = cur.get("last_sent", 0)
+                wait = max(1, interval - (now - last))
+                await asyncio.sleep(wait)
+
+                data = load_periodic_message_data()
+                cur = data.get(gid, {}).get(pid)
+                if not cur or not cur.get("active"):
+                    break
+
+                channel = self.bot.get_channel(int(cur["channel_id"]))
+                if isinstance(channel, discord.TextChannel):
+                    try:
+                        if cur.get("image_url"):
+                            embed = discord.Embed(description=cur["text"])
+                            embed.set_image(url=cur["image_url"])
+                            await channel.send(embed=embed)
+                        else:
+                            await channel.send(cur["text"])
+                    except discord.HTTPException:
+                        pass
+
+                cur["last_sent"] = time.time()
+                data[gid][pid] = cur
+                save_periodic_message_data(data)
+
+            self.periodic_tasks.pop(key, None)
+
+        task = asyncio.create_task(runner())
+        self.periodic_tasks[key] = task
 
     # -----------------------------------------------------
     # /nuke
@@ -3155,7 +3561,6 @@ class SlashCog(commands.Cog):
             "staff": staff_list,
         }
 
-        # パネル本体にセレクト + ボタンを付けて投稿（全員から見える）
         view = StatusSelectView(self, panel_id)
 
         panel_message = await interaction.channel.send(
@@ -3166,7 +3571,6 @@ class SlashCog(commands.Cog):
         panel["message_id"] = panel_message.id
         self.status_panels[panel_id] = panel
 
-        # 永続化
         data = load_status_panel_data()
         data[panel_id] = panel
         save_status_panel_data(data)
@@ -3411,6 +3815,9 @@ class SlashCog(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
 
+        # 見出し＋改行ありの形式に整形
+        formatted = f"__**Stickied Message:**__\n\n{text}"
+
         data = load_fixed_message_data()
         gid = str(interaction.guild.id)
         if gid not in data:
@@ -3428,14 +3835,14 @@ class SlashCog(commands.Cog):
 
         data[gid][str(channel.id)] = {
             "channel_id": channel.id,
-            "text": text,
+            "text": formatted,
             "message_id": None,
             "last_trigger_user_id": None,
         }
         save_fixed_message_data(data)
 
         try:
-            msg = await channel.send(text)
+            msg = await channel.send(formatted)
             data[gid][str(channel.id)]["message_id"] = msg.id
             save_fixed_message_data(data)
         except discord.HTTPException as e:
@@ -3479,7 +3886,7 @@ class SlashCog(commands.Cog):
         await interaction.response.send_message("解除する固定メッセージを選択してください。", view=view, ephemeral=True)
 
     # -----------------------------------------------------
-    # /自動リアクション
+    # /自動リアクション（会話形式）
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -3490,8 +3897,13 @@ class SlashCog(commands.Cog):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
-        modal = AutoReactionModal([], [])
-        await interaction.response.send_modal(modal)
+        data = load_auto_reaction_data()
+        gid = str(interaction.guild.id)
+        guild_data = data.get(gid, {})
+
+        embed = build_auto_reaction_embed(interaction.guild, guild_data)
+        view = AutoReactionSettingView(self)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # -----------------------------------------------------
     # /自動リアクション解除
@@ -3628,6 +4040,232 @@ class SlashCog(commands.Cog):
             "pairs": pairs
         }
         save_role_panel_data(data)
+
+    # -----------------------------------------------------
+    # /招待キャンペーン
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="招待キャンペーン",
+        description="招待キャンペーンを作成します"
+    )
+    @app_commands.describe(
+        duration="キャンペーン期間（例: 1d, 1w）",
+        title="キャンペーンタイトル",
+        description="キャンペーン説明"
+    )
+    async def invite_campaign(
+        self,
+        interaction: discord.Interaction,
+        duration: str,
+        title: str,
+        description: str
+    ):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        try:
+            seconds = parse_duration(duration)
+        except ValueError as e:
+            return await interaction.response.send_message(str(e), ephemeral=True)
+
+        campaign_id = uuid.uuid4().hex[:10]
+        end_time = int(time.time() + seconds)
+
+        data = load_invite_campaign_data()
+        data[campaign_id] = {
+            "id": campaign_id,
+            "guild_id": interaction.guild.id,
+            "channel_id": interaction.channel.id,
+            "title": title,
+            "description": description,
+            "end_time": end_time,
+            "active": True,
+            "user_links": {},
+            "invite_map": {},
+            "counts": {},
+            "total_joins": 0,
+            "join_members": []
+        }
+        save_invite_campaign_data(data)
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="期間", value=f"<t:{end_time}:R>", inline=False)
+
+        view = InviteCampaignView(self, campaign_id)
+        await interaction.response.send_message("キャンペーンを作成しました。", ephemeral=True)
+        await interaction.channel.send(embed=embed, view=view)
+
+        # 終了タスク
+        async def finish():
+            await asyncio.sleep(seconds)
+            d = load_invite_campaign_data()
+            c = d.get(campaign_id)
+            if not c or not c.get("active"):
+                return
+            c["active"] = False
+            save_invite_campaign_data(d)
+
+        asyncio.create_task(finish())
+
+    # -----------------------------------------------------
+    # /招待キャンペーン停止
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="招待キャンペーン停止",
+        description="招待キャンペーンを停止します"
+    )
+    async def invite_campaign_stop(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_invite_campaign_data()
+        gid = str(interaction.guild.id)
+        options = []
+        for cid, c in data.items():
+            if c.get("guild_id") == interaction.guild.id and c.get("active"):
+                options.append(discord.SelectOption(
+                    label=c.get("title", cid)[:100],
+                    value=cid
+                ))
+
+        if not options:
+            return await interaction.response.send_message("停止できるキャンペーンがありません。", ephemeral=True)
+
+        view = InviteCampaignStopView(options)
+        await interaction.response.send_message("停止するキャンペーンを選択してください。", view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /定期メッセージ送信
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="定期メッセージ送信",
+        description="指定したチャンネルに定期的にメッセージを送信します"
+    )
+    @app_commands.describe(
+        channel="送信先チャンネル",
+        text="送信するテキスト",
+        interval="送信間隔（例: 1m, 1h, 1d, 1w）",
+        image_url="画像URL（任意）"
+    )
+    async def periodic_message(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        text: str,
+        interval: str,
+        image_url: str = None
+    ):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        try:
+            seconds = parse_duration(interval)
+        except ValueError as e:
+            return await interaction.response.send_message(str(e), ephemeral=True)
+
+        pm_id = uuid.uuid4().hex[:10]
+        data = load_periodic_message_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {}
+
+        data[gid][pm_id] = {
+            "id": pm_id,
+            "channel_id": channel.id,
+            "text": text,
+            "interval": seconds,
+            "image_url": image_url,
+            "last_sent": 0,
+            "active": True
+        }
+        save_periodic_message_data(data)
+
+        self._start_periodic_task(gid, pm_id, data[gid][pm_id])
+
+        await interaction.response.send_message(
+            f"定期メッセージを設定しました。\nチャンネル: {channel.mention}\n間隔: {interval}",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
+    # /定期メッセージ送信解除
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="定期メッセージ送信解除",
+        description="定期メッセージを解除します"
+    )
+    async def periodic_message_remove(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_periodic_message_data()
+        gid = str(interaction.guild.id)
+        if gid not in data or not data[gid]:
+            return await interaction.response.send_message("定期メッセージが設定されていません。", ephemeral=True)
+
+        options = []
+        for pid, info in data[gid].items():
+            if info.get("active"):
+                channel = interaction.guild.get_channel(info["channel_id"])
+                ch_name = channel.name if channel else str(info["channel_id"])
+                options.append(discord.SelectOption(
+                    label=f"#{ch_name}: {info['text'][:50]}",
+                    value=pid
+                ))
+
+        if not options:
+            return await interaction.response.send_message("解除できる定期メッセージがありません。", ephemeral=True)
+
+        view = PeriodicMessageRemoveView(options)
+        await interaction.response.send_message("解除する定期メッセージを選択してください。", view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /定期メッセージ送信確認
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="定期メッセージ送信確認",
+        description="設定済みの定期メッセージを確認します"
+    )
+    async def periodic_message_check(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        data = load_periodic_message_data()
+        gid = str(interaction.guild.id)
+        items = data.get(gid, {})
+        active_items = {k: v for k, v in items.items() if v.get("active")}
+
+        if not active_items:
+            return await interaction.response.send_message("設定済みの定期メッセージはありません。", ephemeral=True)
+
+        embed = discord.Embed(
+            title="定期メッセージ一覧",
+            color=discord.Color.blurple()
+        )
+
+        for pid, info in active_items.items():
+            channel = interaction.guild.get_channel(info["channel_id"])
+            ch_name = channel.mention if channel else f"<#{info['channel_id']}>"
+            embed.add_field(
+                name=f"ID: {pid} / {ch_name}",
+                value=(
+                    f"間隔: {info['interval']}秒\n"
+                    f"テキスト: {info['text'][:100]}\n"
+                    f"画像: {info.get('image_url') or 'なし'}"
+                ),
+                inline=False
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # -----------------------------------------------------
     # リアクションイベント
@@ -3842,9 +4480,42 @@ class SlashCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         try:
-            data = load_member_log_data()
+            # 招待キャンペーンのカウント
+            data = load_invite_campaign_data()
+            for cid, campaign in data.items():
+                if campaign.get("guild_id") != member.guild.id:
+                    continue
+                if not campaign.get("active"):
+                    continue
+                # 招待コードを特定（簡易的に invites を取得）
+                try:
+                    invites = await member.guild.invites()
+                except discord.HTTPException:
+                    invites = []
+
+                used_code = None
+                for inv in invites:
+                    if inv.uses and inv.uses > 0:
+                        # キャッシュと比較
+                        key = f"{member.guild.id}:{inv.code}"
+                        old_uses = self.invite_cache.get(key, 0)
+                        if inv.uses > old_uses:
+                            used_code = inv.code
+                            self.invite_cache[key] = inv.uses
+                            break
+
+                if used_code and used_code in campaign.get("invite_map", {}):
+                    inviter_id = campaign["invite_map"][used_code]
+                    campaign.setdefault("counts", {})
+                    campaign["counts"][inviter_id] = campaign["counts"].get(inviter_id, 0) + 1
+                    campaign["total_joins"] = campaign.get("total_joins", 0) + 1
+                    campaign.setdefault("join_members", []).append(member.id)
+                    save_invite_campaign_data(data)
+
+            # 入室通知
+            log_data = load_member_log_data()
             guild_id_str = str(member.guild.id)
-            entry = data.get(guild_id_str, {})
+            entry = log_data.get(guild_id_str, {})
             channel_id = entry.get("join_channel_id")
 
             if not channel_id:
@@ -3924,6 +4595,20 @@ class SlashCog(commands.Cog):
             await channel.send(embed=embed)
         except Exception as e:
             print(f"on_member_remove error: {e}")
+
+    # -----------------------------------------------------
+    # 招待キャッシュ初期化
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        for guild in self.bot.guilds:
+            try:
+                invites = await guild.invites()
+                for inv in invites:
+                    self.invite_cache[f"{guild.id}:{inv.code}"] = inv.uses or 0
+            except discord.HTTPException:
+                pass
 
 
 # =========================================================
