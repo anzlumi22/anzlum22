@@ -665,11 +665,10 @@ class VerifyRoleSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET (対話式セットアップ)  ※全面リニューアル
+# TICKET (対話式セットアップ)
 # =========================================================
 
 class TicketSetupModeView(discord.ui.View):
-    """1ボタン式 / 複数項目式 の選択"""
     def __init__(self, cog, user_id):
         super().__init__(timeout=300)
         self.cog = cog
@@ -3757,6 +3756,45 @@ class MediationTicketControlView(discord.ui.View):
             return
 
         await interaction.response.send_message("対応を開始しました。", ephemeral=True)
+
+        # 対応者を記録
+        ticket["supported_by"] = interaction.user.id
+
+        # チャンネル権限を「対応者・取引相手・仲介依頼者」だけ見れるように変更
+        guild = interaction.guild
+        channel = interaction.channel
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True
+            ),
+        }
+
+        requester = guild.get_member(ticket["requester_id"])
+        if requester:
+            overwrites[requester] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            )
+
+        partner = guild.get_member(ticket["partner_id"])
+        if partner:
+            overwrites[partner] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            )
+
+        overwrites[interaction.user] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True
+        )
+
+        try:
+            await channel.edit(overwrites=overwrites)
+        except discord.HTTPException:
+            pass
+
         await interaction.channel.send(
             f"{interaction.user.mention} が対応を開始します🤝🥳"
         )
@@ -3781,7 +3819,7 @@ class MediationTicketControlView(discord.ui.View):
 
         requester = ticket["requester_id"]
         partner = ticket["partner_id"]
-        mediator = ticket.get("mediator_id")
+        mediator = ticket.get("supported_by") or ticket.get("mediator_id")
 
         embed = discord.Embed(
             title="仲介が完了しました。",
@@ -3840,6 +3878,7 @@ class MediationReviewStartView(discord.ui.View):
         self.cog = cog
         self.ticket_id = ticket_id
         self.review_button.custom_id = f"med_review_{ticket_id}"
+        self.end_button.custom_id = f"med_end_{ticket_id}"
 
     @discord.ui.button(
         label="評価する",
@@ -3892,6 +3931,41 @@ class MediationReviewStartView(discord.ui.View):
             view=view,
             ephemeral=True
         )
+
+    @discord.ui.button(
+        label="仲介依頼を終了する",
+        style=discord.ButtonStyle.danger,
+        emoji="🔚",
+        custom_id="med_end_default"
+    )
+    async def end_button(self, interaction, button):
+        ticket = self.cog.mediation_tickets.get(self.ticket_id)
+        if not ticket:
+            await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
+            return
+
+        supported_by = ticket.get("supported_by")
+        if not supported_by or interaction.user.id != supported_by:
+            await interaction.response.send_message(
+                "仲介対応した人のみ実行できます。",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "5秒以内に削除します。",
+            ephemeral=True
+        )
+
+        async def delete_later():
+            await asyncio.sleep(5)
+            try:
+                await interaction.channel.delete(reason="仲介依頼終了")
+            except discord.HTTPException:
+                pass
+            self.cog.mediation_tickets.pop(self.ticket_id, None)
+
+        asyncio.create_task(delete_later())
 
 
 class MediationReviewMediatorSelect(discord.ui.Select):
@@ -3991,6 +4065,59 @@ class MediationReviewModal(discord.ui.Modal):
                         pass
 
         await interaction.response.send_message("レビューを送信しました。", ephemeral=True)
+
+
+# ---------------------------------------------------------
+# 仲介予約キャンセルビュー
+# ---------------------------------------------------------
+
+class MediationReservationCancelSelect(discord.ui.Select):
+    def __init__(self, cog, options):
+        super().__init__(
+            placeholder="キャンセルする予約を選択",
+            options=options,
+            custom_id="mediation_reservation_cancel_select"
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        res_id = self.values[0]
+        data = load_mediation_data()
+        gid = str(interaction.guild.id)
+        g = data.get(gid, {})
+        reservations = g.get("reservations", [])
+
+        target = None
+        for r in reservations:
+            if r.get("id") == res_id:
+                target = r
+                break
+
+        if not target:
+            await interaction.response.edit_message(content="予約が見つかりません。", view=None)
+            return
+
+        is_staff = interaction.user.id in self.cog.get_mediation_staff_ids(interaction.guild, {})
+        if not is_staff and target.get("requester_id") != interaction.user.id:
+            await interaction.response.edit_message(content="この予約をキャンセルする権限がありません。", view=None)
+            return
+
+        g["reservations"] = [r for r in reservations if r.get("id") != res_id]
+        save_mediation_data(data)
+
+        self.cog.mediation_reservation_tasks.pop(res_id, None)
+
+        await interaction.response.edit_message(
+            content=f"予約ID `{res_id}` をキャンセルしました。",
+            view=None
+        )
+
+
+class MediationReservationCancelView(discord.ui.View):
+    def __init__(self, cog, options):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.add_item(MediationReservationCancelSelect(cog, options))
 
 
 # =========================================================
@@ -4186,6 +4313,7 @@ class SlashCog(commands.Cog):
             "partner_item": partner_item,
             "status": "進行中",
             "resumed": False,
+            "supported_by": None,
         }
 
         return ticket_channel
@@ -4951,7 +5079,7 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
-    # /チケット  ※新仕様
+    # /チケット
     # -----------------------------------------------------
 
     @app_commands.command(
@@ -5674,6 +5802,105 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
+    # /仲介人追加
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="仲介人追加",
+        description="現在の仲介チケットに仲介人を追加します"
+    )
+    @app_commands.describe(
+        user="追加する仲介人"
+    )
+    async def mediation_add_mediator(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member
+    ):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message("テキストチャンネルで実行してください。", ephemeral=True)
+
+        topic = channel.topic or ""
+        if not topic.startswith("mediation_ticket:"):
+            return await interaction.response.send_message("このチャンネルは仲介チケットではありません。", ephemeral=True)
+
+        ticket_id = topic.split(":", 1)[1]
+        ticket = self.mediation_tickets.get(ticket_id)
+        if not ticket:
+            return await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
+
+        # チャンネル権限追加
+        try:
+            await channel.set_permissions(
+                user,
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            )
+        except discord.HTTPException:
+            return await interaction.response.send_message("権限の付与に失敗しました。", ephemeral=True)
+
+        ticket.setdefault("extra_mediators", [])
+        if user.id not in ticket["extra_mediators"]:
+            ticket["extra_mediators"].append(user.id)
+
+        await interaction.response.send_message(
+            f"{user.mention} を仲介人として追加しました。",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
+    # /仲介人削除
+    # -----------------------------------------------------
+
+    @app_commands.command(
+        name="仲介人削除",
+        description="現在の仲介チケットから仲介人を削除します"
+    )
+    @app_commands.describe(
+        user="削除する仲介人"
+    )
+    async def mediation_remove_mediator(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member
+    ):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message("テキストチャンネルで実行してください。", ephemeral=True)
+
+        topic = channel.topic or ""
+        if not topic.startswith("mediation_ticket:"):
+            return await interaction.response.send_message("このチャンネルは仲介チケットではありません。", ephemeral=True)
+
+        ticket_id = topic.split(":", 1)[1]
+        ticket = self.mediation_tickets.get(ticket_id)
+        if not ticket:
+            return await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
+
+        # チャンネル権限削除
+        try:
+            await channel.set_permissions(user, overwrite=None)
+        except discord.HTTPException:
+            return await interaction.response.send_message("権限の削除に失敗しました。", ephemeral=True)
+
+        extras = ticket.get("extra_mediators", [])
+        if user.id in extras:
+            extras.remove(user.id)
+
+        await interaction.response.send_message(
+            f"{user.mention} を仲介人から削除しました。",
+            ephemeral=True
+        )
+
+    # -----------------------------------------------------
     # リアクションイベント
     # -----------------------------------------------------
 
@@ -6008,59 +6235,6 @@ class SlashCog(commands.Cog):
                     self.invite_cache[f"{guild.id}:{inv.code}"] = inv.uses or 0
             except discord.HTTPException:
                 pass
-
-
-# =========================================================
-# 仲介予約キャンセルビュー（SlashCog 外で定義）
-# =========================================================
-
-class MediationReservationCancelSelect(discord.ui.Select):
-    def __init__(self, cog, options):
-        super().__init__(
-            placeholder="キャンセルする予約を選択",
-            options=options,
-            custom_id="mediation_reservation_cancel_select"
-        )
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        res_id = self.values[0]
-        data = load_mediation_data()
-        gid = str(interaction.guild.id)
-        g = data.get(gid, {})
-        reservations = g.get("reservations", [])
-
-        target = None
-        for r in reservations:
-            if r.get("id") == res_id:
-                target = r
-                break
-
-        if not target:
-            await interaction.response.edit_message(content="予約が見つかりません。", view=None)
-            return
-
-        is_staff = interaction.user.id in self.cog.get_mediation_staff_ids(interaction.guild, {})
-        if not is_staff and target.get("requester_id") != interaction.user.id:
-            await interaction.response.edit_message(content="この予約をキャンセルする権限がありません。", view=None)
-            return
-
-        g["reservations"] = [r for r in reservations if r.get("id") != res_id]
-        save_mediation_data(data)
-
-        self.cog.mediation_reservation_tasks.pop(res_id, None)
-
-        await interaction.response.edit_message(
-            content=f"予約ID `{res_id}` をキャンセルしました。",
-            view=None
-        )
-
-
-class MediationReservationCancelView(discord.ui.View):
-    def __init__(self, cog, options):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.add_item(MediationReservationCancelSelect(cog, options))
 
 
 # =========================================================
