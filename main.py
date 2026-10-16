@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import os
 import traceback
@@ -74,11 +74,36 @@ bot = MyBot(
 )
 
 
+# =========================
+# ステータス更新（視聴中）
+# =========================
+
+@tasks.loop(minutes=5)
+async def update_status():
+    guild_count = len(bot.guilds)
+    member_count = sum(guild.member_count for guild in bot.guilds)
+
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"{guild_count}台の自販機 | {member_count}members"
+        )
+    )
+
+
+# =========================
+# イベント
+# =========================
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
     print(f"Bot ID: {bot.user.id}")
     print(f"Servers: {len(bot.guilds)}")
+
+    # ステータス更新ループを開始（多重起動防止）
+    if not update_status.is_running():
+        update_status.start()
 
 
 # =========================
