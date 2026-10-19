@@ -1269,12 +1269,12 @@ class TicketControlView(discord.ui.View):
 
 
 # =========================================================
-# TICKET SETTINGS (即時パネル表示 / parent プロパティ回避)
+# TICKET SETTINGS (即時パネル表示 / _parent 衝突回避)
 # =========================================================
 
 class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
-    def __init__(self, parent: "TicketSettingsView", row: int = 0):
-        self._parent = parent
+    def __init__(self, settings_view: "TicketSettingsView", row: int = 0):
+        self.settings_view = settings_view
         super().__init__(
             placeholder="🔎 チケット作成するカテゴリーを選択（検索可）",
             channel_types=[discord.ChannelType.category],
@@ -1284,14 +1284,20 @@ class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        self._parent.settings["category_id"] = self.values[0].id
-        embed = build_ticket_settings_embed(self._parent.settings)
-        await interaction.response.edit_message(embed=embed, view=self._parent)
+        if self.settings_view is None:
+            await interaction.response.send_message(
+                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。",
+                ephemeral=True
+            )
+            return
+        self.settings_view.settings["category_id"] = self.values[0].id
+        embed = build_ticket_settings_embed(self.settings_view.settings)
+        await interaction.response.edit_message(embed=embed, view=self.settings_view)
 
 
 class TicketSettingsArchiveSelect(discord.ui.ChannelSelect):
-    def __init__(self, parent: "TicketSettingsView", row: int = 1):
-        self._parent = parent
+    def __init__(self, settings_view: "TicketSettingsView", row: int = 1):
+        self.settings_view = settings_view
         super().__init__(
             placeholder="🔎 チケット削除時のログ送信チャンネルを選択（検索可）",
             channel_types=[discord.ChannelType.text],
@@ -1301,9 +1307,15 @@ class TicketSettingsArchiveSelect(discord.ui.ChannelSelect):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        self._parent.settings["archive_channel_id"] = self.values[0].id
-        embed = build_ticket_settings_embed(self._parent.settings)
-        await interaction.response.edit_message(embed=embed, view=self._parent)
+        if self.settings_view is None:
+            await interaction.response.send_message(
+                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。",
+                ephemeral=True
+            )
+            return
+        self.settings_view.settings["archive_channel_id"] = self.values[0].id
+        embed = build_ticket_settings_embed(self.settings_view.settings)
+        await interaction.response.edit_message(embed=embed, view=self.settings_view)
 
 
 class TicketSettingsPanelModal(discord.ui.Modal):
@@ -1329,19 +1341,32 @@ class TicketSettingsPanelModal(discord.ui.Modal):
 
 
 class TicketSettingsRoleSelect(discord.ui.Select):
-    def __init__(self, parent: "TicketSettingsView", options):
-        super().__init__(placeholder="スタッフロールを選択", options=options, custom_id="ticket_settings_role")
-        self._parent = parent
+    def __init__(self, settings_view: "TicketSettingsView", options):
+        self.settings_view = settings_view
+        super().__init__(
+            placeholder="スタッフロールを選択",
+            options=options,
+            custom_id="ticket_settings_role"
+        )
 
     async def callback(self, interaction: discord.Interaction):
-        self._parent.settings["mention_role_id"] = int(self.values[0])
-        embed = build_ticket_settings_embed(self._parent.settings)
+        if self.settings_view is None:
+            await interaction.response.send_message(
+                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。",
+                ephemeral=True
+            )
+            return
+        self.settings_view.settings["mention_role_id"] = int(self.values[0])
+        embed = build_ticket_settings_embed(self.settings_view.settings)
         try:
-            await interaction.message.edit(embed=embed, view=self._parent)
+            await interaction.message.edit(embed=embed, view=self.settings_view)
         except (discord.HTTPException, AttributeError):
             pass
         role = interaction.guild.get_role(int(self.values[0]))
-        await interaction.response.send_message(f"スタッフロールを {role.mention if role else self.values[0]} に設定しました。", ephemeral=True)
+        await interaction.response.send_message(
+            f"スタッフロールを {role.mention if role else self.values[0]} に設定しました。",
+            ephemeral=True
+        )
 
 
 class TicketSettingsRoleView(discord.ui.View):
