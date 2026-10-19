@@ -140,7 +140,6 @@ def format_account_age(created_at: datetime.datetime):
 # =========================================================
 
 def build_ticket_settings_embed(panel: dict) -> discord.Embed:
-    """チケット設定パネル（/仲介チケット管理 と同形式）"""
     reqs = panel.get("requirements") or []
 
     if reqs:
@@ -149,11 +148,7 @@ def build_ticket_settings_embed(panel: dict) -> discord.Embed:
             name = r.get("name", "無題")
             emoji = r.get("emoji", "📝")
             desc = r.get("description", "") or "説明なし"
-            req_lines.append(
-                f"{i}.{name}\n"
-                f"　{emoji}\n"
-                f"　{desc}"
-            )
+            req_lines.append(f"{i}.{name}\n　{emoji}\n　{desc}")
         req_value = "\n".join(req_lines)
     else:
         req_value = "なし"
@@ -1274,39 +1269,41 @@ class TicketControlView(discord.ui.View):
 
 
 # =========================================================
-# TICKET SETTINGS (即時パネル表示)
+# TICKET SETTINGS (即時パネル表示 / parent プロパティ回避)
 # =========================================================
 
 class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
-    def __init__(self, parent: "TicketSettingsView"):
-        self.parent = parent
+    def __init__(self, parent: "TicketSettingsView", row: int = 0):
+        self._parent = parent
         super().__init__(
             placeholder="🔎 チケット作成するカテゴリーを選択（検索可）",
             channel_types=[discord.ChannelType.category],
             min_values=1, max_values=1,
-            custom_id="ticket_settings_category"
+            custom_id="ticket_settings_category",
+            row=row
         )
 
     async def callback(self, interaction: discord.Interaction):
-        self.parent.settings["category_id"] = self.values[0].id
-        embed = build_ticket_settings_embed(self.parent.settings)
-        await interaction.response.edit_message(embed=embed, view=self.parent)
+        self._parent.settings["category_id"] = self.values[0].id
+        embed = build_ticket_settings_embed(self._parent.settings)
+        await interaction.response.edit_message(embed=embed, view=self._parent)
 
 
 class TicketSettingsArchiveSelect(discord.ui.ChannelSelect):
-    def __init__(self, parent: "TicketSettingsView"):
-        self.parent = parent
+    def __init__(self, parent: "TicketSettingsView", row: int = 1):
+        self._parent = parent
         super().__init__(
             placeholder="🔎 チケット削除時のログ送信チャンネルを選択（検索可）",
             channel_types=[discord.ChannelType.text],
             min_values=1, max_values=1,
-            custom_id="ticket_settings_archive"
+            custom_id="ticket_settings_archive",
+            row=row
         )
 
     async def callback(self, interaction: discord.Interaction):
-        self.parent.settings["archive_channel_id"] = self.values[0].id
-        embed = build_ticket_settings_embed(self.parent.settings)
-        await interaction.response.edit_message(embed=embed, view=self.parent)
+        self._parent.settings["archive_channel_id"] = self.values[0].id
+        embed = build_ticket_settings_embed(self._parent.settings)
+        await interaction.response.edit_message(embed=embed, view=self._parent)
 
 
 class TicketSettingsPanelModal(discord.ui.Modal):
@@ -1334,13 +1331,13 @@ class TicketSettingsPanelModal(discord.ui.Modal):
 class TicketSettingsRoleSelect(discord.ui.Select):
     def __init__(self, parent: "TicketSettingsView", options):
         super().__init__(placeholder="スタッフロールを選択", options=options, custom_id="ticket_settings_role")
-        self.parent = parent
+        self._parent = parent
 
     async def callback(self, interaction: discord.Interaction):
-        self.parent.settings["mention_role_id"] = int(self.values[0])
-        embed = build_ticket_settings_embed(self.parent.settings)
+        self._parent.settings["mention_role_id"] = int(self.values[0])
+        embed = build_ticket_settings_embed(self._parent.settings)
         try:
-            await interaction.message.edit(embed=embed, view=self.parent)
+            await interaction.message.edit(embed=embed, view=self._parent)
         except (discord.HTTPException, AttributeError):
             pass
         role = interaction.guild.get_role(int(self.values[0]))
@@ -1423,8 +1420,8 @@ class TicketSettingsView(discord.ui.View):
             "mode": "multi",
             "button_label": "🎫 チケットを作成",
         }
-        self.add_item(TicketSettingsCategorySelect(self))
-        self.add_item(TicketSettingsArchiveSelect(self))
+        self.add_item(TicketSettingsCategorySelect(self, row=0))
+        self.add_item(TicketSettingsArchiveSelect(self, row=1))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -1432,11 +1429,11 @@ class TicketSettingsView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="パネル設定", style=discord.ButtonStyle.secondary, emoji="📝", row=1)
+    @discord.ui.button(label="パネル設定", style=discord.ButtonStyle.secondary, emoji="📝", row=2)
     async def panel_button(self, interaction, button):
         await interaction.response.send_modal(TicketSettingsPanelModal(self))
 
-    @discord.ui.button(label="ロール設定", style=discord.ButtonStyle.secondary, emoji="🔔", row=1)
+    @discord.ui.button(label="ロール設定", style=discord.ButtonStyle.secondary, emoji="🔔", row=2)
     async def role_button(self, interaction, button):
         roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed][:25]
         if not roles:
@@ -1446,15 +1443,15 @@ class TicketSettingsView(discord.ui.View):
         view = TicketSettingsRoleView(self, options)
         await interaction.response.send_message("スタッフロールを選択してください。", view=view, ephemeral=True)
 
-    @discord.ui.button(label="埋め込み設定", style=discord.ButtonStyle.secondary, emoji="🖼️", row=1)
+    @discord.ui.button(label="埋め込み設定", style=discord.ButtonStyle.secondary, emoji="🖼️", row=2)
     async def embed_button(self, interaction, button):
         await interaction.response.send_modal(TicketSettingsEmbedModal(self))
 
-    @discord.ui.button(label="要件追加", style=discord.ButtonStyle.success, emoji="➕", row=1)
+    @discord.ui.button(label="要件追加", style=discord.ButtonStyle.success, emoji="➕", row=2)
     async def req_button(self, interaction, button):
         await interaction.response.send_modal(TicketSettingsRequirementModal(self))
 
-    @discord.ui.button(label="✅ パネルを作成", style=discord.ButtonStyle.success, emoji="✅", row=2)
+    @discord.ui.button(label="✅ パネルを作成", style=discord.ButtonStyle.success, emoji="✅", row=3)
     async def create_button(self, interaction, button):
         s = self.settings
         if not s.get("category_id"):
