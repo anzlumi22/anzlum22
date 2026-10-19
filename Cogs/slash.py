@@ -144,20 +144,17 @@ def default_ticket_settings():
 
 
 def get_guild_draft(guild_id: int) -> dict:
-    """ギルドごとの設定下書きを取得（なければデフォルト）"""
     data = load_ticket_settings_draft()
     gid = str(guild_id)
     if gid not in data:
         data[gid] = default_ticket_settings()
         save_ticket_settings_draft(data)
-    # 欠損キーを補完
     merged = default_ticket_settings()
     merged.update(data[gid])
     return merged
 
 
 def update_guild_draft(guild_id: int, settings: dict):
-    """ギルドごとの設定下書きを保存"""
     data = load_ticket_settings_draft()
     data[str(guild_id)] = settings
     save_ticket_settings_draft(data)
@@ -187,9 +184,7 @@ def build_ticket_settings_embed(panel: dict) -> discord.Embed:
         req_lines = []
         for i, r in enumerate(reqs, start=1):
             name = r.get("name", "無題")
-            emoji = r.get("emoji", "📝")
-            desc = r.get("description", "") or "説明なし"
-            req_lines.append(f"{i}.{name}\n　{emoji}\n　{desc}")
+            req_lines.append(f"{i}. **{name}**")
         req_value = "\n".join(req_lines)
     else:
         req_value = "なし"
@@ -666,16 +661,14 @@ class TicketSetupSimpleView(discord.ui.View):
         }
 
         embed = discord.Embed(
-            title=s["panel_title"] or "🎫 チケット",
-            description=s["panel_description"] or "下のドロップダウンからチケットを作成できます。",
+            title=s["panel_title"] or "購入・お問い合わせ",
+            description=s["panel_description"] or "チケットを開きましたらスタッフが対応するまでお待ちください。",
             color=discord.Color.blurple()
         )
         req_lines = []
         for i, r in enumerate(s["requirements"], start=1):
             name = r.get("name", "無題")
-            emoji = r.get("emoji", "📝")
-            desc = r.get("description", "") or "説明なし"
-            req_lines.append(f"{i}.{name}\n　{emoji}\n　{desc}")
+            req_lines.append(f"{i}. **{name}**")
         if req_lines:
             embed.add_field(name="要件一覧", value="\n".join(req_lines)[:1024], inline=False)
         embed.set_footer(text=f"1人につき最大 {s['max_tickets']} 件まで")
@@ -735,7 +728,7 @@ class TicketSetupMultiView(discord.ui.View):
         if not reqs:
             await interaction.response.send_message("要件がまだありません。", ephemeral=True)
             return
-        lines = [f"{r.get('emoji', '📝')} **{r['name']}** - {r.get('description', '')}" for r in reqs]
+        lines = [f"{i}. **{r.get('name', '無題')}**" for i, r in enumerate(reqs, start=1)]
         embed = discord.Embed(title="登録済みの要件", description="\n".join(lines), color=discord.Color.blurple())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -792,17 +785,15 @@ class TicketSetupMultiView(discord.ui.View):
         }
 
         embed = discord.Embed(
-            title=s["panel_title"] or "🎫 チケット",
-            description=s["panel_description"] or "下のドロップダウンからチケットを作成できます。",
+            title=s["panel_title"] or "購入・お問い合わせ",
+            description=s["panel_description"] or "チケットを開きましたらスタッフが対応するまでお待ちください。",
             color=discord.Color.blurple()
         )
 
         req_lines = []
         for i, r in enumerate(s["requirements"], start=1):
             name = r.get("name", "無題")
-            emoji = r.get("emoji", "📝")
-            desc = r.get("description", "") or "説明なし"
-            req_lines.append(f"{i}.{name}\n　{emoji}\n　{desc}")
+            req_lines.append(f"{i}. **{name}**")
         if req_lines:
             embed.add_field(name="要件一覧", value="\n".join(req_lines)[:1024], inline=False)
         embed.set_footer(text=f"1人につき最大 {s['max_tickets']} 件まで")
@@ -1159,112 +1150,40 @@ class TicketDetailModal(discord.ui.Modal):
 # TICKET CONTROL
 # =========================================================
 
-class TicketControlRoleSelect(discord.ui.Select):
-    def __init__(self, cog, panel_id, options):
-        super().__init__(placeholder="スタッフロールを選択", options=options)
-        self.cog = cog
-        self.panel_id = panel_id
-
-    async def callback(self, interaction: discord.Interaction):
-        panel = self.cog.ticket_panels.get(self.panel_id)
-        if not panel:
-            await interaction.response.edit_message(content="パネルが見つかりません。", view=None)
-            return
-        panel["mention_role_id"] = int(self.values[0])
-        data = load_ticket_panel_data()
-        data[self.panel_id] = panel
-        save_ticket_panel_data(data)
-        role = interaction.guild.get_role(int(self.values[0]))
-        await interaction.response.edit_message(content=f"スタッフロールを {role.mention if role else self.values[0]} に設定しました。", view=None)
-
-
-class TicketControlPanelModal(discord.ui.Modal):
+class TicketConfirmDeleteView(discord.ui.View):
+    """チケット削除の確認用（はい / いいえ）"""
     def __init__(self, cog, panel_id):
-        super().__init__(title="パネル設定")
+        super().__init__(timeout=60)
         self.cog = cog
         self.panel_id = panel_id
-        panel = cog.ticket_panels.get(panel_id, {})
-        self.title_input = discord.ui.TextInput(label="パネルタイトル", default=panel.get("panel_title", ""), required=False, max_length=200)
-        self.desc_input = discord.ui.TextInput(label="パネル説明", default=panel.get("panel_description", ""), style=discord.TextStyle.paragraph, required=False, max_length=1000)
-        self.add_item(self.title_input)
-        self.add_item(self.desc_input)
 
-    async def on_submit(self, interaction):
-        panel = self.cog.ticket_panels.get(self.panel_id)
-        if not panel:
-            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+    def _is_staff(self, interaction: discord.Interaction) -> bool:
+        panel = self.cog.ticket_panels.get(self.panel_id) or {}
+        role_id = panel.get("mention_role_id")
+        if interaction.user.guild_permissions.manage_channels:
+            return True
+        if not role_id:
+            return False
+        return any(r.id == role_id for r in getattr(interaction.user, "roles", []))
+
+    @discord.ui.button(label="はい（削除する）", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction):
+        if not self._is_staff(interaction):
+            await interaction.response.send_message(
+                "削除にはチャンネル管理権限、またはスタッフロールが必要です。",
+                ephemeral=True
+            )
             return
-        if self.title_input.value.strip():
-            panel["panel_title"] = self.title_input.value.strip()
-        if self.desc_input.value.strip():
-            panel["panel_description"] = self.desc_input.value.strip()
-        data = load_ticket_panel_data()
-        data[self.panel_id] = panel
-        save_ticket_panel_data(data)
+        await interaction.response.send_message("5秒後にこのチケットを削除します…", ephemeral=True)
+        await asyncio.sleep(5)
         try:
-            ch = interaction.guild.get_channel(panel["channel_id"])
-            if isinstance(ch, discord.TextChannel):
-                msg = await ch.fetch_message(panel["message_id"])
-                embed = msg.embeds[0] if msg.embeds else discord.Embed()
-                embed.title = panel.get("panel_title") or "🎫 チケット"
-                embed.description = panel.get("panel_description") or "下のドロップダウンからチケットを作成できます。"
-                await msg.edit(embed=embed)
-        except (discord.HTTPException, AttributeError):
+            await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user}")
+        except discord.HTTPException:
             pass
-        await interaction.response.send_message("パネル設定を更新しました。", ephemeral=True)
 
-
-class TicketControlEmbedModal(discord.ui.Modal):
-    def __init__(self, cog, panel_id):
-        super().__init__(title="埋め込み設定")
-        self.cog = cog
-        self.panel_id = panel_id
-        panel = cog.ticket_panels.get(panel_id, {})
-        self.title_input = discord.ui.TextInput(label="埋め込みタイトル", default=panel.get("embed_title") or "", required=False, max_length=200)
-        self.desc_input = discord.ui.TextInput(label="埋め込み説明", default=panel.get("embed_description") or "", style=discord.TextStyle.paragraph, required=False, max_length=1000)
-        self.add_item(self.title_input)
-        self.add_item(self.desc_input)
-
-    async def on_submit(self, interaction):
-        panel = self.cog.ticket_panels.get(self.panel_id)
-        if not panel:
-            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
-            return
-        panel["embed_title"] = self.title_input.value.strip() or None
-        panel["embed_description"] = self.desc_input.value.strip() or None
-        data = load_ticket_panel_data()
-        data[self.panel_id] = panel
-        save_ticket_panel_data(data)
-        await interaction.response.send_message("埋め込み設定を更新しました。", ephemeral=True)
-
-
-class TicketControlRequirementModal(discord.ui.Modal):
-    def __init__(self, cog, panel_id):
-        super().__init__(title="要件追加")
-        self.cog = cog
-        self.panel_id = panel_id
-        self.name_input = discord.ui.TextInput(label="要件タイトル", max_length=100, required=True)
-        self.emoji_input = discord.ui.TextInput(label="絵文字", max_length=10, required=False)
-        self.desc_input = discord.ui.TextInput(label="説明", style=discord.TextStyle.paragraph, max_length=200, required=False)
-        self.add_item(self.name_input)
-        self.add_item(self.emoji_input)
-        self.add_item(self.desc_input)
-
-    async def on_submit(self, interaction):
-        panel = self.cog.ticket_panels.get(self.panel_id)
-        if not panel:
-            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
-            return
-        panel.setdefault("requirements", []).append({
-            "name": self.name_input.value.strip(),
-            "description": self.desc_input.value.strip() or "",
-            "emoji": self.emoji_input.value.strip() or "📝",
-            "placeholder": "チケットの種類を選択してください"
-        })
-        data = load_ticket_panel_data()
-        data[self.panel_id] = panel
-        save_ticket_panel_data(data)
-        await interaction.response.send_message(f"要件「{self.name_input.value.strip()}」を追加しました。", ephemeral=True)
+    @discord.ui.button(label="いいえ（キャンセル）", style=discord.ButtonStyle.secondary, emoji="↩️")
+    async def cancel(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="削除をキャンセルしました。", view=None)
 
 
 class TicketControlView(discord.ui.View):
@@ -1272,49 +1191,142 @@ class TicketControlView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         self.panel_id = panel_id
-        self.panel_button.custom_id = f"ticket_cfg_panel_{panel_id}"
-        self.role_button.custom_id = f"ticket_cfg_role_{panel_id}"
-        self.embed_button.custom_id = f"ticket_cfg_embed_{panel_id}"
-        self.req_button.custom_id = f"ticket_cfg_req_{panel_id}"
-        self.close_button.custom_id = f"ticket_cfg_close_{panel_id}"
+        self.support_start_button.custom_id = f"ticket_cfg_support_start_{panel_id}"
+        self.delete_button.custom_id = f"ticket_cfg_delete_{panel_id}"
+        self.support_stop_button.custom_id = f"ticket_cfg_support_stop_{panel_id}"
 
-    @discord.ui.button(label="パネル設定", style=discord.ButtonStyle.secondary, emoji="📝")
-    async def panel_button(self, interaction, button):
-        await interaction.response.send_modal(TicketControlPanelModal(self.cog, self.panel_id))
+    def _is_staff(self, interaction: discord.Interaction) -> bool:
+        panel = self.cog.ticket_panels.get(self.panel_id) or {}
+        role_id = panel.get("mention_role_id")
+        if interaction.user.guild_permissions.manage_channels:
+            return True
+        if not role_id:
+            return False
+        return any(r.id == role_id for r in getattr(interaction.user, "roles", []))
 
-    @discord.ui.button(label="ロール設定", style=discord.ButtonStyle.secondary, emoji="🔔")
-    async def role_button(self, interaction, button):
-        roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed][:25]
-        if not roles:
-            await interaction.response.send_message("ロールがありません。", ephemeral=True)
-            return
-        options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles]
-        view = discord.ui.View(timeout=120)
-        view.add_item(TicketControlRoleSelect(self.cog, self.panel_id, options))
-        await interaction.response.send_message("スタッフロールを選択してください。", view=view, ephemeral=True)
+    def _get_requester_id(self, channel) -> int:
+        topic = getattr(channel, "topic", None) or ""
+        if topic.startswith("ticket_owner:"):
+            try:
+                return int(topic.split(":", 2)[1])
+            except (IndexError, ValueError):
+                return None
+        return None
 
-    @discord.ui.button(label="埋め込み設定", style=discord.ButtonStyle.secondary, emoji="🖼️")
-    async def embed_button(self, interaction, button):
-        await interaction.response.send_modal(TicketControlEmbedModal(self.cog, self.panel_id))
-
-    @discord.ui.button(label="要件追加", style=discord.ButtonStyle.success, emoji="➕")
-    async def req_button(self, interaction, button):
-        await interaction.response.send_modal(TicketControlRequirementModal(self.cog, self.panel_id))
-
-    @discord.ui.button(label="🔒 チケットを閉じる", style=discord.ButtonStyle.danger)
-    async def close_button(self, interaction, button):
+    @discord.ui.button(label="対応開始", style=discord.ButtonStyle.success, emoji="🤝")
+    async def support_start_button(self, interaction, button):
         panel = self.cog.ticket_panels.get(self.panel_id)
         if not panel:
             await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
             return
-        if panel.get("delete_permission") == "admin" and not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("削除にはチャンネル管理権限が必要です。", ephemeral=True)
+        if not self._is_staff(interaction):
+            await interaction.response.send_message("スタッフロールを持つ人のみ実行できます。", ephemeral=True)
             return
-        await interaction.response.send_message("チケットを削除します...", ephemeral=True)
+
+        guild = interaction.guild
+        channel = interaction.channel
+        requester_id = self._get_requester_id(channel)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                manage_channels=True, read_message_history=True
+            ),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            ),
+        }
+        if requester_id:
+            requester = guild.get_member(requester_id)
+            if requester:
+                overwrites[requester] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
         try:
-            await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+            await channel.edit(overwrites=overwrites)
         except discord.HTTPException:
             pass
+
+        await interaction.response.send_message(
+            f"{interaction.user.mention} が対応を開始します🥳🎊"
+        )
+
+    @discord.ui.button(label="チケット削除", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def delete_button(self, interaction, button):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+            return
+        if not self._is_staff(interaction):
+            await interaction.response.send_message("スタッフロールを持つ人のみ実行できます。", ephemeral=True)
+            return
+
+        view = TicketConfirmDeleteView(self.cog, self.panel_id)
+        await interaction.response.send_message(
+            "本当にこのチケットを削除しますか？\n（「はい」を押すと 5 秒後に削除されます）",
+            view=view,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="対応中止", style=discord.ButtonStyle.secondary, emoji="⛔")
+    async def support_stop_button(self, interaction, button):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+            return
+        if not self._is_staff(interaction):
+            await interaction.response.send_message("スタッフロールを持つ人のみ実行できます。", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        channel = interaction.channel
+        requester_id = self._get_requester_id(channel)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                manage_channels=True, read_message_history=True
+            ),
+        }
+        if requester_id:
+            requester = guild.get_member(requester_id)
+            if requester:
+                overwrites[requester] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        role_id = panel.get("mention_role_id")
+        if role_id:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        for rid in panel.get("access_role_ids", []):
+            r = guild.get_role(rid)
+            if r:
+                overwrites[r] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+        for uid in panel.get("access_user_ids", []):
+            m = guild.get_member(uid)
+            if m:
+                overwrites[m] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        try:
+            await channel.edit(overwrites=overwrites)
+        except discord.HTTPException:
+            pass
+
+        await interaction.response.send_message(
+            f"{interaction.user.mention} が対応を中止しました。他の人を選んでください。"
+        )
 
 
 # =========================================================
@@ -1589,7 +1601,6 @@ class TicketSettingsView(discord.ui.View):
             )
             return
 
-        # 既存パネルがあれば再利用（編集）、無ければ新規作成
         panel_id = s.get("panel_id")
         existing_panel = None
         if panel_id and panel_id in self.cog.ticket_panels:
@@ -1597,7 +1608,6 @@ class TicketSettingsView(discord.ui.View):
 
         if existing_panel is None:
             panel_id = uuid.uuid4().hex[:10]
-            existing_panel = {"id": panel_id}
 
         panel_data = {
             "id": panel_id,
@@ -1623,23 +1633,20 @@ class TicketSettingsView(discord.ui.View):
         self.cog.ticket_panels[panel_id] = panel_data
 
         embed = discord.Embed(
-            title=s.get("panel_title") or "🎫 チケット",
-            description=s.get("panel_description") or "下のドロップダウンからチケットを作成できます。",
+            title=s.get("panel_title") or "購入・お問い合わせ",
+            description=s.get("panel_description") or "チケットを開きましたらスタッフが対応するまでお待ちください。",
             color=discord.Color.blurple()
         )
         req_lines = []
         for i, r in enumerate(s.get("requirements") or [], start=1):
             name = r.get("name", "無題")
-            emoji = r.get("emoji", "📝")
-            desc = r.get("description", "") or "説明なし"
-            req_lines.append(f"{i}.{name}\n　{emoji}\n　{desc}")
+            req_lines.append(f"{i}. **{name}**")
         if req_lines:
             embed.add_field(name="要件一覧", value="\n".join(req_lines)[:1024], inline=False)
         embed.set_footer(text=f"1人につき最大 {s.get('max_tickets', 1)} 件まで")
 
         view = TicketPanelView(self.cog, panel_id)
 
-        # 既存メッセージが生きていれば編集、無ければ新規送信
         target_channel_id = panel_data.get("channel_id")
         target_message_id = panel_data.get("message_id")
         edited = False
@@ -1664,7 +1671,6 @@ class TicketSettingsView(discord.ui.View):
 
         self.cog.ticket_panels[panel_id] = panel_data
 
-        # 下書きにも保存（次回 /チケット 実行時に引き継ぐ）
         self.settings["panel_id"] = panel_id
         self.settings["panel_channel_id"] = panel_data["channel_id"]
         self.settings["panel_message_id"] = panel_data["message_id"]
@@ -1675,17 +1681,13 @@ class TicketSettingsView(discord.ui.View):
         save_ticket_panel_data(data)
 
         if edited:
-            await interaction.response.send_message(
-                "✅ 既存パネルを更新しました。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("✅ 既存パネルを更新しました。", ephemeral=True)
         else:
             await interaction.response.send_message(
                 "✅ チケットパネルを作成しました。\n"
                 "（削除されても、同じ画面から「✅ パネルを作成」を再度押せば再作成できます）",
                 ephemeral=True
             )
-        # ★ self.stop() を呼ばない：何度でも押せるようにする
 
 
 # =========================================================
