@@ -394,10 +394,6 @@ class GiveawayView(discord.ui.View):
         )
 
 
-# =========================================================
-# GIVEAWAY STOP (配布終了)
-# =========================================================
-
 class StopGiveawayView(discord.ui.View):
     def __init__(self, cog, options):
         super().__init__(timeout=60)
@@ -455,10 +451,6 @@ class StopGiveawayView(discord.ui.View):
             view=None
         )
 
-
-# =========================================================
-# GIVEAWAY REDRAW (配布再抽選)
-# =========================================================
 
 class RedrawGiveawayView(discord.ui.View):
     def __init__(self, cog, options):
@@ -665,7 +657,7 @@ class VerifyRoleSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET (対話式セットアップ)
+# TICKET (対話式セットアップ / セレクトメニューパネル)
 # =========================================================
 
 class TicketSetupModeView(discord.ui.View):
@@ -734,7 +726,7 @@ class TicketSetupSimpleView(discord.ui.View):
             "embed_description": None,
             "welcome_message": None,
             "archive_channel_id": None,
-            "requirements": [{"name": "その他", "description": "", "emoji": "📝"}],
+            "requirements": [{"name": "その他", "description": "", "emoji": "📝", "placeholder": "チケットの種類を選択してください"}],
         }
 
     async def interaction_check(self, interaction):
@@ -836,6 +828,7 @@ class TicketSetupSimpleView(discord.ui.View):
         panel_id = uuid.uuid4().hex[:10]
         self.cog.ticket_panels[panel_id] = {
             "id": panel_id,
+            "creator_id": interaction.user.id,
             "mode": "simple",
             "button_label": s["button_label"],
             "max_tickets": s["max_tickets"],
@@ -856,13 +849,21 @@ class TicketSetupSimpleView(discord.ui.View):
         }
 
         embed = discord.Embed(
-            title="🎫 チケット",
-            description=f"下のボタンからチケットを作成できます。\n1人につき最大 {s['max_tickets']} 件まで。",
+            title=s["panel_title"] or "🎫 チケット",
+            description=s["panel_description"] or "下のドロップダウンからチケットを作成できます。",
             color=discord.Color.blurple()
         )
+        embed.add_field(
+            name="要件一覧",
+            value="\n".join(
+                f"{i}. **{r['name']}**\n　{r.get('emoji', '📝')} {r.get('description', '') or '説明なし'}"
+                for i, r in enumerate(s["requirements"], start=1)
+            )[:1024] or "なし",
+            inline=False
+        )
+        embed.set_footer(text=f"1人につき最大 {s['max_tickets']} 件まで")
 
         view = TicketPanelView(self.cog, panel_id)
-        view.create_button.label = s["button_label"]
 
         await interaction.response.send_message("チケットパネルを作成しました。", ephemeral=True)
         message = await interaction.channel.send(embed=embed, view=view)
@@ -971,6 +972,7 @@ class TicketSetupMultiView(discord.ui.View):
         panel_id = uuid.uuid4().hex[:10]
         self.cog.ticket_panels[panel_id] = {
             "id": panel_id,
+            "creator_id": interaction.user.id,
             "mode": "multi",
             "button_label": s["button_label"],
             "max_tickets": s["max_tickets"],
@@ -991,25 +993,24 @@ class TicketSetupMultiView(discord.ui.View):
         }
 
         embed = discord.Embed(
-            title="🎫 チケット",
-            description=f"下のボタンからチケットを作成できます。\n1人につき最大 {s['max_tickets']} 件まで。",
+            title=s["panel_title"] or "🎫 チケット",
+            description=s["panel_description"] or "下のドロップダウンからチケットを作成できます。",
             color=discord.Color.blurple()
         )
 
         req_lines = []
-        for r in s["requirements"]:
+        for i, r in enumerate(s["requirements"], start=1):
             emoji = r.get("emoji", "📝")
-            req_lines.append(f"{emoji} **{r['name']}**\n　{r.get('description', '') or '説明なし'}")
+            req_lines.append(f"{i}. **{r['name']}**\n　{emoji} {r.get('description', '') or '説明なし'}")
 
-        if req_lines:
-            embed.add_field(
-                name="📋 要件一覧",
-                value="\n\n".join(req_lines)[:1024],
-                inline=False
-            )
+        embed.add_field(
+            name="要件一覧",
+            value="\n".join(req_lines)[:1024] if req_lines else "なし",
+            inline=False
+        )
+        embed.set_footer(text=f"1人につき最大 {s['max_tickets']} 件まで")
 
         view = TicketPanelView(self.cog, panel_id)
-        view.create_button.label = s["button_label"]
 
         await interaction.response.send_message("チケットパネルを作成しました。", ephemeral=True)
         message = await interaction.channel.send(embed=embed, view=view)
@@ -1265,163 +1266,17 @@ class TicketSetupObjectSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET PANEL
+# TICKET PANEL (セレクトメニュー方式)
 # =========================================================
 
-class TicketCloseView(discord.ui.View):
-    def __init__(self, cog, panel_id):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.panel_id = panel_id
-        self.close_button.custom_id = f"ticket_close_{panel_id}"
-
-    @discord.ui.button(
-        label="🔒 チケットを閉じる",
-        style=discord.ButtonStyle.danger,
-        custom_id="ticket_close_default"
-    )
-    async def close_button(self, interaction, button):
-        panel = self.cog.ticket_panels.get(self.panel_id)
-        if not panel:
-            await interaction.response.send_message(
-                "パネルが見つかりません。",
-                ephemeral=True
-            )
-            return
-
-        if panel["delete_permission"] == "admin":
-            if not interaction.user.guild_permissions.manage_channels:
-                await interaction.response.send_message(
-                    "このチケットを削除するにはチャンネル管理権限が必要です。",
-                    ephemeral=True
-                )
-                return
-
-        await interaction.response.send_message(
-            "チケットを削除します...",
-            ephemeral=True
-        )
-
-        channel = interaction.channel
-
-        archive_id = panel.get("archive_channel_id")
-        if archive_id:
-            archive = interaction.guild.get_channel(archive_id)
-            if isinstance(archive, discord.TextChannel):
-                embed = discord.Embed(
-                    title="📦 チケット削除ログ",
-                    description=f"チャンネル: `{channel.name}`",
-                    color=discord.Color.dark_grey(),
-                    timestamp=discord.utils.utcnow()
-                )
-                embed.add_field(
-                    name="削除者",
-                    value=interaction.user.mention,
-                    inline=False
-                )
-                try:
-                    await archive.send(embed=embed)
-                except discord.HTTPException:
-                    pass
-
-        try:
-            await channel.delete(
-                reason=f"Ticket closed by {interaction.user}"
-            )
-        except discord.HTTPException:
-            pass
-
-
-class TicketPanelView(discord.ui.View):
-    def __init__(self, cog, panel_id):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.panel_id = panel_id
-        self.create_button.custom_id = f"ticket_create_{panel_id}"
-
-    @discord.ui.button(
-        label="🎫 チケットを作成",
-        style=discord.ButtonStyle.success,
-        custom_id="ticket_create_default"
-    )
-    async def create_button(self, interaction, button):
-        panel = self.cog.ticket_panels.get(self.panel_id)
-        if not panel or not interaction.guild:
-            await interaction.response.send_message(
-                "パネルが見つかりません。",
-                ephemeral=True
-            )
-            return
-
-        user_tickets = [
-            ch for ch in interaction.guild.channels
-            if isinstance(ch, discord.TextChannel)
-            and ch.topic == f"ticket_owner:{interaction.user.id}:panel:{self.panel_id}"
-        ]
-        if len(user_tickets) >= panel["max_tickets"]:
-            await interaction.response.send_message(
-                f"あなたは既に {panel['max_tickets']} 件のチケットを作成しています。",
-                ephemeral=True
-            )
-            return
-
-        view = TicketPopupSelectView(self.cog, self.panel_id, panel)
-        await interaction.response.edit_message(view=view)
-
-
-class TicketPopupBackButton(discord.ui.Button):
+class TicketSelectMenu(discord.ui.Select):
     def __init__(self, cog, panel_id, panel):
-        super().__init__(
-            label="↩️ 戻る",
-            style=discord.ButtonStyle.secondary,
-            custom_id="ticket_popup_back_btn"
-        )
-        self.cog = cog
-        self.panel_id = panel_id
-        self.panel = panel
-
-    async def callback(self, interaction):
-        view = TicketPanelView(self.cog, self.panel_id)
-        view.create_button.label = self.panel.get("button_label", "🎫 チケットを作成")
-        await interaction.response.edit_message(view=view)
-
-
-class TicketPopupSelect(discord.ui.Select):
-    def __init__(self, cog, panel_id, panel, options, placeholder):
-        super().__init__(
-            placeholder=placeholder,
-            options=options,
-            custom_id="ticket_popup_select"
-        )
-        self.cog = cog
-        self.panel_id = panel_id
-        self.panel = panel
-
-    async def callback(self, interaction):
-        requirement_name = self.values[0]
-
-        requirement_desc = ""
-        for req in self.panel.get("requirements", []):
-            if req.get("name") == requirement_name:
-                requirement_desc = req.get("description", "") or ""
-                break
-
-        modal = TicketDetailModal(
-            self.cog, self.panel_id, self.panel,
-            requirement_name, requirement_desc
-        )
-        await interaction.response.send_modal(modal)
-
-
-class TicketPopupSelectView(discord.ui.View):
-    def __init__(self, cog, panel_id, panel):
-        super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
         self.panel = panel
 
         requirements = panel.get("requirements") or [
-            {"name": "その他", "description": "", "emoji": "📝", "placeholder": "Please choose an option."}
+            {"name": "その他", "description": "", "emoji": "📝", "placeholder": "チケットの種類を選択してください"}
         ]
 
         options = []
@@ -1436,10 +1291,57 @@ class TicketPopupSelectView(discord.ui.View):
                 emoji=emoji[:1] if emoji else None
             ))
 
-        placeholder = requirements[0].get("placeholder", "Please choose an option.")
+        placeholder = requirements[0].get("placeholder", "チケットの種類を選択してください")
+        super().__init__(
+            placeholder=placeholder[:150],
+            options=options,
+            custom_id=f"ticket_select_{panel_id}"
+        )
 
-        self.add_item(TicketPopupSelect(cog, panel_id, panel, options, placeholder[:150]))
-        self.add_item(TicketPopupBackButton(cog, panel_id, panel))
+    async def callback(self, interaction: discord.Interaction):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel or not interaction.guild:
+            await interaction.response.send_message(
+                "パネルが見つかりません。",
+                ephemeral=True
+            )
+            return
+
+        # 既存チケット数チェック
+        user_tickets = [
+            ch for ch in interaction.guild.channels
+            if isinstance(ch, discord.TextChannel)
+            and ch.topic == f"ticket_owner:{interaction.user.id}:panel:{self.panel_id}"
+        ]
+        if len(user_tickets) >= panel.get("max_tickets", 1):
+            await interaction.response.send_message(
+                f"あなたは既に {panel.get('max_tickets', 1)} 件のチケットを作成しています。",
+                ephemeral=True
+            )
+            return
+
+        requirement_name = self.values[0]
+        requirement_desc = ""
+        for req in panel.get("requirements", []):
+            if req.get("name") == requirement_name:
+                requirement_desc = req.get("description", "") or ""
+                break
+
+        modal = TicketDetailModal(
+            self.cog, self.panel_id, panel,
+            requirement_name, requirement_desc
+        )
+        await interaction.response.send_modal(modal)
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self, cog, panel_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.panel_id = panel_id
+        panel = cog.ticket_panels.get(panel_id)
+        if panel:
+            self.add_item(TicketSelectMenu(cog, panel_id, panel))
 
 
 class TicketDetailModal(discord.ui.Modal):
@@ -1563,6 +1465,9 @@ class TicketDetailModal(discord.ui.Modal):
         )
 
         mention_text = interaction.user.mention
+        panel_creator_id = panel.get("creator_id")
+        if panel_creator_id:
+            mention_text += f" <@{panel_creator_id}>"
         if mention_role_id:
             role = interaction.guild.get_role(mention_role_id)
             if role:
@@ -1571,15 +1476,220 @@ class TicketDetailModal(discord.ui.Modal):
         welcome = panel.get("welcome_message") or "チケットを作成しました。"
 
         await channel.send(
-            content=f"{mention_text}\n{welcome}",
+            content=mention_text,
             embed=embed,
-            view=TicketCloseView(self.cog, self.panel_id)
+            view=TicketControlView(self.cog, self.panel_id)
         )
 
         await interaction.followup.send(
             f"チケットを作成しました: {channel.mention}",
             ephemeral=True
         )
+
+
+# =========================================================
+# TICKET CONTROL (チケット作成後の設定ボタン群)
+# =========================================================
+
+class TicketControlRoleSelect(discord.ui.Select):
+    def __init__(self, cog, panel_id, options):
+        super().__init__(placeholder="スタッフロールを選択", options=options)
+        self.cog = cog
+        self.panel_id = panel_id
+
+    async def callback(self, interaction: discord.Interaction):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.edit_message(content="パネルが見つかりません。", view=None)
+            return
+        panel["mention_role_id"] = int(self.values[0])
+        data = load_ticket_panel_data()
+        data[self.panel_id] = panel
+        save_ticket_panel_data(data)
+        role = interaction.guild.get_role(int(self.values[0]))
+        await interaction.response.edit_message(
+            content=f"スタッフロールを {role.mention if role else self.values[0]} に設定しました。",
+            view=None
+        )
+
+
+class TicketControlPanelModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id):
+        super().__init__(title="パネル設定")
+        self.cog = cog
+        self.panel_id = panel_id
+        panel = cog.ticket_panels.get(panel_id, {})
+        self.title_input = discord.ui.TextInput(
+            label="パネルタイトル",
+            default=panel.get("panel_title", ""),
+            required=False,
+            max_length=200
+        )
+        self.desc_input = discord.ui.TextInput(
+            label="パネル説明",
+            default=panel.get("panel_description", ""),
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=1000
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+            return
+        if self.title_input.value.strip():
+            panel["panel_title"] = self.title_input.value.strip()
+        if self.desc_input.value.strip():
+            panel["panel_description"] = self.desc_input.value.strip()
+        data = load_ticket_panel_data()
+        data[self.panel_id] = panel
+        save_ticket_panel_data(data)
+
+        # パネルメッセージの embed を更新
+        try:
+            ch = interaction.guild.get_channel(panel["channel_id"])
+            if isinstance(ch, discord.TextChannel):
+                msg = await ch.fetch_message(panel["message_id"])
+                embed = msg.embeds[0] if msg.embeds else discord.Embed()
+                embed.title = panel.get("panel_title") or "🎫 チケット"
+                embed.description = panel.get("panel_description") or "下のドロップダウンからチケットを作成できます。"
+                await msg.edit(embed=embed)
+        except (discord.HTTPException, AttributeError):
+            pass
+
+        await interaction.response.send_message("パネル設定を更新しました。", ephemeral=True)
+
+
+class TicketControlEmbedModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id):
+        super().__init__(title="埋め込み設定")
+        self.cog = cog
+        self.panel_id = panel_id
+        panel = cog.ticket_panels.get(panel_id, {})
+        self.title_input = discord.ui.TextInput(
+            label="埋め込みタイトル",
+            default=panel.get("embed_title") or "",
+            required=False,
+            max_length=200
+        )
+        self.desc_input = discord.ui.TextInput(
+            label="埋め込み説明",
+            default=panel.get("embed_description") or "",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=1000
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+            return
+        panel["embed_title"] = self.title_input.value.strip() or None
+        panel["embed_description"] = self.desc_input.value.strip() or None
+        data = load_ticket_panel_data()
+        data[self.panel_id] = panel
+        save_ticket_panel_data(data)
+        await interaction.response.send_message("埋め込み設定を更新しました。", ephemeral=True)
+
+
+class TicketControlRequirementModal(discord.ui.Modal):
+    def __init__(self, cog, panel_id):
+        super().__init__(title="要件追加")
+        self.cog = cog
+        self.panel_id = panel_id
+        self.name_input = discord.ui.TextInput(label="要件タイトル", max_length=100, required=True)
+        self.emoji_input = discord.ui.TextInput(label="絵文字", max_length=10, required=False)
+        self.desc_input = discord.ui.TextInput(
+            label="説明", style=discord.TextStyle.paragraph, max_length=200, required=False
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.emoji_input)
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+            return
+        panel.setdefault("requirements", []).append({
+            "name": self.name_input.value.strip(),
+            "description": self.desc_input.value.strip() or "",
+            "emoji": self.emoji_input.value.strip() or "📝",
+            "placeholder": "チケットの種類を選択してください"
+        })
+        data = load_ticket_panel_data()
+        data[self.panel_id] = panel
+        save_ticket_panel_data(data)
+        await interaction.response.send_message(
+            f"要件「{self.name_input.value.strip()}」を追加しました。",
+            ephemeral=True
+        )
+
+
+class TicketControlView(discord.ui.View):
+    def __init__(self, cog, panel_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.panel_button.custom_id = f"ticket_cfg_panel_{panel_id}"
+        self.role_button.custom_id = f"ticket_cfg_role_{panel_id}"
+        self.embed_button.custom_id = f"ticket_cfg_embed_{panel_id}"
+        self.req_button.custom_id = f"ticket_cfg_req_{panel_id}"
+        self.close_button.custom_id = f"ticket_cfg_close_{panel_id}"
+
+    @discord.ui.button(label="パネル設定", style=discord.ButtonStyle.secondary, emoji="📝")
+    async def panel_button(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketControlPanelModal(self.cog, self.panel_id)
+        )
+
+    @discord.ui.button(label="ロール設定", style=discord.ButtonStyle.secondary, emoji="🔔")
+    async def role_button(self, interaction, button):
+        roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed][:25]
+        if not roles:
+            await interaction.response.send_message("ロールがありません。", ephemeral=True)
+            return
+        options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles]
+        view = discord.ui.View(timeout=120)
+        view.add_item(TicketControlRoleSelect(self.cog, self.panel_id, options))
+        await interaction.response.send_message(
+            "スタッフロールを選択してください。",
+            view=view,
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="埋め込み設定", style=discord.ButtonStyle.secondary, emoji="🖼️")
+    async def embed_button(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketControlEmbedModal(self.cog, self.panel_id)
+        )
+
+    @discord.ui.button(label="要件追加", style=discord.ButtonStyle.success, emoji="➕")
+    async def req_button(self, interaction, button):
+        await interaction.response.send_modal(
+            TicketControlRequirementModal(self.cog, self.panel_id)
+        )
+
+    @discord.ui.button(label="🔒 チケットを閉じる", style=discord.ButtonStyle.danger)
+    async def close_button(self, interaction, button):
+        panel = self.cog.ticket_panels.get(self.panel_id)
+        if not panel:
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
+            return
+        if panel.get("delete_permission") == "admin" and not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("削除にはチャンネル管理権限が必要です。", ephemeral=True)
+            return
+        await interaction.response.send_message("チケットを削除します...", ephemeral=True)
+        try:
+            await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+        except discord.HTTPException:
+            pass
 
 
 # =========================================================
@@ -1621,49 +1731,20 @@ class VouchRatingView(discord.ui.View):
             timestamp=discord.utils.utcnow()
         )
 
-        embed.add_field(
-            name="購入者",
-            value=interaction.user.mention,
-            inline=True
-        )
-        embed.add_field(
-            name="商品",
-            value=self.product_name,
-            inline=True
-        )
-        embed.add_field(
-            name="個数",
-            value=str(self.quantity),
-            inline=True
-        )
-        embed.add_field(
-            name="評価",
-            value=f"{'⭐' * stars} `{stars}/5`",
-            inline=False
-        )
-        embed.add_field(
-            name="感想",
-            value=self.impression,
-            inline=False
-        )
-
-        embed.set_footer(
-            text=f"Review by {interaction.user.display_name} / ID: {interaction.user.id}"
-        )
+        embed.add_field(name="購入者", value=interaction.user.mention, inline=True)
+        embed.add_field(name="商品", value=self.product_name, inline=True)
+        embed.add_field(name="個数", value=str(self.quantity), inline=True)
+        embed.add_field(name="評価", value=f"{'⭐' * stars} `{stars}/5`", inline=False)
+        embed.add_field(name="感想", value=self.impression, inline=False)
+        embed.set_footer(text=f"Review by {interaction.user.display_name} / ID: {interaction.user.id}")
 
         try:
             await destination.send(embed=embed)
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "Botに送信先への閲覧・送信権限がありません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("Botに送信先への閲覧・送信権限がありません。", ephemeral=True)
             return
         except discord.HTTPException:
-            await interaction.response.send_message(
-                "実績を送信できませんでした。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("実績を送信できませんでした。", ephemeral=True)
             return
 
         panel["count"] += 1
@@ -1671,21 +1752,14 @@ class VouchRatingView(discord.ui.View):
         counter_id = panel.get("counter_id")
         if counter_id:
             counter = interaction.guild.get_channel(counter_id)
-
             if isinstance(counter, discord.TextChannel):
                 name = f"{panel['counter_base_name']} -{panel['count']}"[:100]
                 try:
-                    await counter.edit(
-                        name=name,
-                        reason="実績カウント更新"
-                    )
+                    await counter.edit(name=name, reason="実績カウント更新")
                 except discord.HTTPException:
                     pass
 
-        await interaction.response.edit_message(
-            content="✅ 実績を送信しました。",
-            view=None
-        )
+        await interaction.response.edit_message(content="✅ 実績を送信しました。", view=None)
 
     @discord.ui.button(label="⭐", style=discord.ButtonStyle.secondary)
     async def star1(self, interaction, button):
@@ -1729,26 +1803,11 @@ class VouchModal(discord.ui.Modal):
         self.cog = cog
         self.panel_id = panel_id
 
-        self.product_name = discord.ui.TextInput(
-            label="商品名",
-            placeholder="購入した商品名",
-            max_length=100,
-            required=True
-        )
-        self.quantity = discord.ui.TextInput(
-            label="個数",
-            placeholder="数字のみ",
-            max_length=10,
-            required=True
-        )
+        self.product_name = discord.ui.TextInput(label="商品名", placeholder="購入した商品名", max_length=100, required=True)
+        self.quantity = discord.ui.TextInput(label="個数", placeholder="数字のみ", max_length=10, required=True)
         self.impression = discord.ui.TextInput(
-            label="感想",
-            placeholder="感想を入力",
-            style=discord.TextStyle.paragraph,
-            max_length=1000,
-            required=True
+            label="感想", placeholder="感想を入力", style=discord.TextStyle.paragraph, max_length=1000, required=True
         )
-
         self.add_item(self.product_name)
         self.add_item(self.quantity)
         self.add_item(self.impression)
@@ -1764,10 +1823,7 @@ class VouchModal(discord.ui.Modal):
             return
 
         if not self.quantity.value.isdigit():
-            await interaction.response.send_message(
-                "個数は数字のみで入力してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("個数は数字のみで入力してください。", ephemeral=True)
             return
 
         view = VouchRatingView(
@@ -1823,10 +1879,7 @@ def status_embed(guild, staff_list):
     else:
         color = discord.Color.blurple()
 
-    embed = discord.Embed(
-        title="対応状況",
-        color=color
-    )
+    embed = discord.Embed(title="対応状況", color=color)
 
     if not staff_list:
         embed.description = "登録されているスタッフがいません。"
@@ -1866,10 +1919,7 @@ class StatusMessageModal(discord.ui.Modal):
     async def on_submit(self, interaction):
         panel = self.cog.status_panels.get(self.panel_id)
         if not panel:
-            await interaction.response.send_message(
-                "パネルが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
             return
 
         staff_list = panel.get("staff", [])
@@ -1880,19 +1930,13 @@ class StatusMessageModal(discord.ui.Modal):
                 break
 
         if not target:
-            await interaction.response.send_message(
-                "あなたはこのパネルのスタッフではありません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("あなたはこのパネルのスタッフではありません。", ephemeral=True)
             return
 
         target["message"] = self.message_input.value.strip()
         await self.cog.refresh_status(panel)
 
-        await interaction.response.send_message(
-            "一言を更新しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("一言を更新しました。", ephemeral=True)
 
 
 class StatusSelectView(discord.ui.View):
@@ -1916,10 +1960,7 @@ class StatusSelectView(discord.ui.View):
     async def select(self, interaction, select):
         panel = self.cog.status_panels.get(self.panel_id)
         if not panel:
-            await interaction.response.send_message(
-                "パネルが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
             return
 
         staff_list = panel.get("staff", [])
@@ -1938,11 +1979,7 @@ class StatusSelectView(discord.ui.View):
             return
 
         status = select.values[0]
-        emojis = {
-            "対応不可": "🔴",
-            "対応遅延": "🟠",
-            "対応可能": "🟢"
-        }
+        emojis = {"対応不可": "🔴", "対応遅延": "🟠", "対応可能": "🟢"}
         target["status"] = status
         target["emoji"] = emojis[status]
 
@@ -1953,26 +1990,16 @@ class StatusSelectView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(
-        label="✏️ 一言変更",
-        style=discord.ButtonStyle.primary,
-        custom_id="status_message_default"
-    )
+    @discord.ui.button(label="✏️ 一言変更", style=discord.ButtonStyle.primary, custom_id="status_message_default")
     async def message_button(self, interaction, button):
         panel = self.cog.status_panels.get(self.panel_id)
         if not panel:
-            await interaction.response.send_message(
-                "パネルが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
             return
 
         staff_ids = [s["user_id"] for s in panel.get("staff", [])]
         if interaction.user.id not in staff_ids:
-            await interaction.response.send_message(
-                "あなたはこのパネルのスタッフではありません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("あなたはこのパネルのスタッフではありません。", ephemeral=True)
             return
 
         await interaction.response.send_modal(
@@ -1981,7 +2008,7 @@ class StatusSelectView(discord.ui.View):
 
 
 # =========================================================
-# TICKET EDIT
+# TICKET EDIT (パネル編集メニュー)
 # =========================================================
 
 class TicketEditSelectView(discord.ui.View):
@@ -1999,10 +2026,7 @@ class TicketEditSelectView(discord.ui.View):
         panel = self.cog.ticket_panels.get(panel_id)
 
         if not panel:
-            await interaction.response.edit_message(
-                content="パネルが見つかりません。",
-                view=None
-            )
+            await interaction.response.edit_message(content="パネルが見つかりません。", view=None)
             return
 
         view = TicketEditMenuView(self.cog, panel_id)
@@ -2029,78 +2053,36 @@ class TicketEditMenuView(discord.ui.View):
             discord.SelectOption(label="アーカイブチャンネル", value="archive_channel"),
         ]
 
-    @discord.ui.select(
-        placeholder="編集する項目を選択",
-        options=[],
-        custom_id="ticket_edit_field"
-    )
+    @discord.ui.select(placeholder="編集する項目を選択", options=[], custom_id="ticket_edit_field")
     async def field_select(self, interaction, select):
         field = select.values[0]
 
         if field == "category":
             categories = interaction.guild.categories[:25]
             if not categories:
-                await interaction.response.send_message(
-                    "カテゴリーがありません。",
-                    ephemeral=True
-                )
+                await interaction.response.send_message("カテゴリーがありません。", ephemeral=True)
                 return
-            options = [
-                discord.SelectOption(label=c.name[:100], value=str(c.id))
-                for c in categories
-            ]
-            view = TicketEditObjectSelectView(
-                self.cog, self.panel_id, field, options
-            )
-            await interaction.response.edit_message(
-                content="新しいカテゴリーを選択してください。",
-                view=view
-            )
+            options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in categories]
+            view = TicketEditObjectSelectView(self.cog, self.panel_id, field, options)
+            await interaction.response.edit_message(content="新しいカテゴリーを選択してください。", view=view)
 
         elif field == "mention_role":
-            roles = [
-                r for r in interaction.guild.roles
-                if not r.is_default() and not r.managed
-            ][:25]
+            roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed][:25]
             if not roles:
-                await interaction.response.send_message(
-                    "ロールがありません。",
-                    ephemeral=True
-                )
+                await interaction.response.send_message("ロールがありません。", ephemeral=True)
                 return
-            options = [
-                discord.SelectOption(label=r.name[:100], value=str(r.id))
-                for r in roles
-            ]
-            view = TicketEditObjectSelectView(
-                self.cog, self.panel_id, field, options
-            )
-            await interaction.response.edit_message(
-                content="新しいメンションロールを選択してください。",
-                view=view
-            )
+            options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles]
+            view = TicketEditObjectSelectView(self.cog, self.panel_id, field, options)
+            await interaction.response.edit_message(content="新しいメンションロールを選択してください。", view=view)
 
         elif field == "archive_channel":
-            channels = [
-                c for c in interaction.guild.text_channels
-            ][:25]
+            channels = [c for c in interaction.guild.text_channels][:25]
             if not channels:
-                await interaction.response.send_message(
-                    "テキストチャンネルがありません。",
-                    ephemeral=True
-                )
+                await interaction.response.send_message("テキストチャンネルがありません。", ephemeral=True)
                 return
-            options = [
-                discord.SelectOption(label=c.name[:100], value=str(c.id))
-                for c in channels
-            ]
-            view = TicketEditObjectSelectView(
-                self.cog, self.panel_id, field, options
-            )
-            await interaction.response.edit_message(
-                content="新しいアーカイブチャンネルを選択してください。",
-                view=view
-            )
+            options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in channels]
+            view = TicketEditObjectSelectView(self.cog, self.panel_id, field, options)
+            await interaction.response.edit_message(content="新しいアーカイブチャンネルを選択してください。", view=view)
 
         else:
             await interaction.response.send_modal(
@@ -2116,17 +2098,11 @@ class TicketEditObjectSelectView(discord.ui.View):
         self.field = field
         self.select.options = options
 
-    @discord.ui.select(
-        placeholder="選択してください",
-        custom_id="ticket_edit_object_select"
-    )
+    @discord.ui.select(placeholder="選択してください", custom_id="ticket_edit_object_select")
     async def select(self, interaction, select):
         panel = self.cog.ticket_panels.get(self.panel_id)
         if not panel:
-            await interaction.response.edit_message(
-                content="パネルが見つかりません。",
-                view=None
-            )
+            await interaction.response.edit_message(content="パネルが見つかりません。", view=None)
             return
 
         value = int(select.values[0])
@@ -2137,6 +2113,10 @@ class TicketEditObjectSelectView(discord.ui.View):
             panel["mention_role_id"] = value
         elif self.field == "archive_channel":
             panel["archive_channel_id"] = value
+
+        data = load_ticket_panel_data()
+        data[self.panel_id] = panel
+        save_ticket_panel_data(data)
 
         await interaction.response.edit_message(
             content=f"`{self.field}` を更新しました。",
@@ -2162,10 +2142,7 @@ class TicketEditModal(discord.ui.Modal):
     async def on_submit(self, interaction):
         panel = self.cog.ticket_panels.get(self.panel_id)
         if not panel:
-            await interaction.response.send_message(
-                "パネルが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("パネルが見つかりません。", ephemeral=True)
             return
 
         value = self.value_input.value.strip()
@@ -2188,26 +2165,14 @@ class TicketEditModal(discord.ui.Modal):
                 else:
                     raise ValueError("admin または everyone を指定してください。")
         except ValueError as error:
-            await interaction.response.send_message(
-                f"値が不正です: {error}",
-                ephemeral=True
-            )
+            await interaction.response.send_message(f"値が不正です: {error}", ephemeral=True)
             return
 
-        try:
-            channel = interaction.guild.get_channel(panel["channel_id"])
-            if isinstance(channel, discord.TextChannel):
-                message = await channel.fetch_message(panel["message_id"])
-                new_view = TicketPanelView(self.cog, self.panel_id)
-                new_view.create_button.label = panel["button_label"]
-                await message.edit(view=new_view)
-        except (discord.HTTPException, AttributeError):
-            pass
+        data = load_ticket_panel_data()
+        data[self.panel_id] = panel
+        save_ticket_panel_data(data)
 
-        await interaction.response.send_message(
-            f"`{field}` を更新しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"`{field}` を更新しました。", ephemeral=True)
 
 
 # =========================================================
@@ -2326,7 +2291,7 @@ class MemberLogSettingView(discord.ui.View):
 
 
 # =========================================================
-# 荒らし対策 (ANTI-RAID)
+# ANTIRAID
 # =========================================================
 
 def build_antiraid_embed(guild, data):
@@ -2338,16 +2303,8 @@ def build_antiraid_embed(guild, data):
         ),
         color=discord.Color.red()
     )
-    embed.add_field(
-        name="連投スパム",
-        value="オン" if data.get("spam_enabled") else "オフ",
-        inline=False
-    )
-    embed.add_field(
-        name="リンク検知",
-        value="オン" if data.get("link_enabled") else "オフ",
-        inline=False
-    )
+    embed.add_field(name="連投スパム", value="オン" if data.get("spam_enabled") else "オフ", inline=False)
+    embed.add_field(name="リンク検知", value="オン" if data.get("link_enabled") else "オフ", inline=False)
     ignore_users = data.get("ignore_user_ids", [])
     embed.add_field(
         name="荒らし対策を検知しないメンバー",
@@ -2455,10 +2412,6 @@ class AntiraidSettingView(discord.ui.View):
         self.add_item(AntiraidIgnoreRoleSelect(cog))
 
 
-# =========================================================
-# 荒らし対策 検知アクション
-# =========================================================
-
 class AntiraidPunishView(discord.ui.View):
     def __init__(self, member, reason):
         super().__init__(timeout=300)
@@ -2469,10 +2422,7 @@ class AntiraidPunishView(discord.ui.View):
         if not interaction.user.guild_permissions.kick_members and \
            not interaction.user.guild_permissions.ban_members and \
            not interaction.user.guild_permissions.moderate_members:
-            await interaction.response.send_message(
-                "この操作にはモデレーション権限が必要です。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("この操作にはモデレーション権限が必要です。", ephemeral=True)
             return False
         return True
 
@@ -2480,10 +2430,7 @@ class AntiraidPunishView(discord.ui.View):
     async def ban_button(self, interaction, button):
         try:
             await self.member.ban(reason=f"Anti-raid: {self.reason} / by {interaction.user}")
-            await interaction.response.send_message(
-                f"{self.member.mention} をBANしました。",
-                ephemeral=True
-            )
+            await interaction.response.send_message(f"{self.member.mention} をBANしました。", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("BANできません。権限を確認してください。", ephemeral=True)
         except discord.HTTPException as e:
@@ -2493,10 +2440,7 @@ class AntiraidPunishView(discord.ui.View):
     async def kick_button(self, interaction, button):
         try:
             await self.member.kick(reason=f"Anti-raid: {self.reason} / by {interaction.user}")
-            await interaction.response.send_message(
-                f"{self.member.mention} をKICKしました。",
-                ephemeral=True
-            )
+            await interaction.response.send_message(f"{self.member.mention} をKICKしました。", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("KICKできません。権限を確認してください。", ephemeral=True)
         except discord.HTTPException as e:
@@ -2505,11 +2449,7 @@ class AntiraidPunishView(discord.ui.View):
     @discord.ui.button(label="TIMEOUT", style=discord.ButtonStyle.primary, emoji="⏳")
     async def timeout_button(self, interaction, button):
         view = TimeoutDurationView(self.member, self.reason)
-        await interaction.response.send_message(
-            "TIMEOUT期間を選択してください。",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_message("TIMEOUT期間を選択してください。", view=view, ephemeral=True)
 
 
 class TimeoutDurationView(discord.ui.View):
@@ -2549,7 +2489,7 @@ class TimeoutDurationView(discord.ui.View):
 
 
 # =========================================================
-# 固定メッセージ
+# FIXED MESSAGE
 # =========================================================
 
 class FixedMessageRemoveSelect(discord.ui.Select):
@@ -2583,7 +2523,7 @@ class FixedMessageRemoveView(discord.ui.View):
 
 
 # =========================================================
-# 自動リアクション（会話形式）
+# AUTO REACTION
 # =========================================================
 
 def build_auto_reaction_embed(guild, data):
@@ -2595,11 +2535,7 @@ def build_auto_reaction_embed(guild, data):
         ),
         color=discord.Color.blurple()
     )
-    embed.add_field(
-        name="自動リアクション",
-        value="オン" if data else "オフ",
-        inline=False
-    )
+    embed.add_field(name="自動リアクション", value="オン" if data else "オフ", inline=False)
 
     if data:
         lines = []
@@ -2613,11 +2549,7 @@ def build_auto_reaction_embed(guild, data):
             inline=False
         )
     else:
-        embed.add_field(
-            name="リアクションするチャンネル",
-            value="なし",
-            inline=False
-        )
+        embed.add_field(name="リアクションするチャンネル", value="なし", inline=False)
 
     return embed
 
@@ -2714,7 +2646,7 @@ class AutoReactionRemoveView(discord.ui.View):
 
 
 # =========================================================
-# 招待キャンペーン
+# INVITE CAMPAIGN
 # =========================================================
 
 class InviteCampaignView(discord.ui.View):
@@ -2773,16 +2705,12 @@ class InviteCampaignView(discord.ui.View):
         uid = str(interaction.user.id)
         counts = campaign.get("counts", {})
         my_count = counts.get(uid, 0)
-
         total_joins = campaign.get("total_joins", 0)
 
         max_count = max(counts.values()) if counts else 0
         needed = max(0, max_count - my_count + 1) if max_count > 0 else 0
 
-        embed = discord.Embed(
-            title="あなたの招待状況",
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title="あなたの招待状況", color=discord.Color.blurple())
         embed.add_field(name="招待した人数", value=f"{my_count}人", inline=False)
         embed.add_field(name="現在の参加人数", value=f"{total_joins}人", inline=False)
         embed.add_field(name="1位になるまでの招待数", value=f"{needed}回", inline=False)
@@ -2811,11 +2739,7 @@ class InviteCampaignView(discord.ui.View):
             name = member.mention if member else f"<@{uid}>"
             lines.append(f"{i}位 - {name} {cnt}回")
 
-        embed = discord.Embed(
-            title="🏆 招待ランキング",
-            description="\n".join(lines),
-            color=discord.Color.gold()
-        )
+        embed = discord.Embed(title="🏆 招待ランキング", description="\n".join(lines), color=discord.Color.gold())
 
         uid = str(interaction.user.id)
         my_count = counts.get(uid, 0)
@@ -2828,11 +2752,7 @@ class InviteCampaignView(discord.ui.View):
         if my_rank > 0:
             member = interaction.guild.get_member(int(uid))
             name = member.mention if member else f"<@{uid}>"
-            embed.add_field(
-                name="自分の成績",
-                value=f"{my_rank}位 - {name} {my_count}回",
-                inline=False
-            )
+            embed.add_field(name="自分の成績", value=f"{my_rank}位 - {name} {my_count}回", inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -2863,7 +2783,7 @@ class InviteCampaignStopView(discord.ui.View):
 
 
 # =========================================================
-# 定期メッセージ
+# PERIODIC MESSAGE
 # =========================================================
 
 class PeriodicMessageModal(discord.ui.Modal):
@@ -2949,15 +2869,8 @@ class PeriodicMessageRemoveView(discord.ui.View):
 
 
 # =========================================================
+# MEDIATION (仲介)
 # =========================================================
-# ★★★ 仲介機能 ★★★
-# =========================================================
-# =========================================================
-
-
-# ---------------------------------------------------------
-# 仲介設定 / 実績チャンネル設定
-# ---------------------------------------------------------
 
 def build_mediation_settings_embed(guild, data):
     role_ids = data.get("role_ids", [])
@@ -3005,10 +2918,6 @@ def build_mediation_channel_embed(guild, data):
     )
     return embed
 
-
-# ---------------------------------------------------------
-# 仲介設定ビュー
-# ---------------------------------------------------------
 
 class MediationRoleSelect(discord.ui.RoleSelect):
     def __init__(self, cog):
@@ -3067,10 +2976,6 @@ class MediationSettingsView(discord.ui.View):
         self.add_item(MediationRoleSelect(cog))
         self.add_item(MediationMemberSelect(cog))
 
-
-# ---------------------------------------------------------
-# 仲介詳細設定ビュー（チケット作成カテゴリー・カウント）
-# ---------------------------------------------------------
 
 class MediationRequestCategorySelect(discord.ui.ChannelSelect):
     def __init__(self, cog):
@@ -3159,10 +3064,6 @@ class MediationChannelSettingView(discord.ui.View):
         self.add_item(MediationCounterToggleButton(cog))
 
 
-# ---------------------------------------------------------
-# 仲介依頼パネル
-# ---------------------------------------------------------
-
 class MediationRequestPanelView(discord.ui.View):
     def __init__(self, cog, panel_id):
         super().__init__(timeout=None)
@@ -3180,11 +3081,7 @@ class MediationRequestPanelView(discord.ui.View):
     )
     async def request_button(self, interaction, button):
         view = MediationStartMethodView(self.cog, self.panel_id)
-        await interaction.response.send_message(
-            "開始方法を選択してください",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_message("開始方法を選択してください", view=view, ephemeral=True)
 
     @discord.ui.button(
         label="予約確認",
@@ -3208,38 +3105,21 @@ class MediationRequestPanelView(discord.ui.View):
 class MediationStartMethodSelect(discord.ui.Select):
     def __init__(self, cog, panel_id):
         options = [
-            discord.SelectOption(
-                label="⚡今すぐ始める",
-                value="now",
-                description="すぐに仲介依頼を開始します"
-            ),
-            discord.SelectOption(
-                label="⏰時間指定（予約）",
-                value="reserve",
-                description="日時を指定して予約します"
-            ),
+            discord.SelectOption(label="⚡今すぐ始める", value="now", description="すぐに仲介依頼を開始します"),
+            discord.SelectOption(label="⏰時間指定（予約）", value="reserve", description="日時を指定して予約します"),
         ]
-        super().__init__(
-            placeholder="開始方法を選択してください",
-            options=options,
-            custom_id="mediation_start_method_select"
-        )
+        super().__init__(placeholder="開始方法を選択してください", options=options,
+                         custom_id="mediation_start_method_select")
         self.cog = cog
         self.panel_id = panel_id
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "now":
             view = MediationPartnerSelectView(self.cog, self.panel_id, None)
-            await interaction.response.edit_message(
-                content="取引相手を選択してください（検索可能）",
-                view=view
-            )
+            await interaction.response.edit_message(content="取引相手を選択してください（検索可能）", view=view)
         else:
             view = MediationPartnerSelectView(self.cog, self.panel_id, None, reserve=True)
-            await interaction.response.edit_message(
-                content="取引相手を選択してください（検索可能）",
-                view=view
-            )
+            await interaction.response.edit_message(content="取引相手を選択してください（検索可能）", view=view)
 
 
 class MediationStartMethodView(discord.ui.View):
@@ -3289,26 +3169,14 @@ class MediationTradeTypeView(discord.ui.View):
         self.partner_id = partner_id
         self.reserve = reserve
 
-    @discord.ui.button(
-        label="💰売買",
-        style=discord.ButtonStyle.success,
-        custom_id="mediation_trade_buy"
-    )
+    @discord.ui.button(label="💰売買", style=discord.ButtonStyle.success, custom_id="mediation_trade_buy")
     async def trade_buy(self, interaction, button):
-        modal = MediationTradeDetailModal(
-            self.cog, self.panel_id, self.partner_id, "売買", self.reserve
-        )
+        modal = MediationTradeDetailModal(self.cog, self.panel_id, self.partner_id, "売買", self.reserve)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(
-        label="🔄️交換",
-        style=discord.ButtonStyle.primary,
-        custom_id="mediation_trade_exchange"
-    )
+    @discord.ui.button(label="🔄️交換", style=discord.ButtonStyle.primary, custom_id="mediation_trade_exchange")
     async def trade_exchange(self, interaction, button):
-        modal = MediationTradeDetailModal(
-            self.cog, self.panel_id, self.partner_id, "交換", self.reserve
-        )
+        modal = MediationTradeDetailModal(self.cog, self.panel_id, self.partner_id, "交換", self.reserve)
         await interaction.response.send_modal(modal)
 
 
@@ -3328,16 +3196,8 @@ class MediationTradeDetailModal(discord.ui.Modal):
             required=True,
             max_length=500
         )
-        self.my_item_input = discord.ui.TextInput(
-            label="自分の出す内容",
-            required=True,
-            max_length=300
-        )
-        self.partner_item_input = discord.ui.TextInput(
-            label="相手を出す内容",
-            required=True,
-            max_length=300
-        )
+        self.my_item_input = discord.ui.TextInput(label="自分の出す内容", required=True, max_length=300)
+        self.partner_item_input = discord.ui.TextInput(label="相手を出す内容", required=True, max_length=300)
         self.add_item(self.content_input)
         self.add_item(self.my_item_input)
         self.add_item(self.partner_item_input)
@@ -3353,11 +3213,7 @@ class MediationTradeDetailModal(discord.ui.Modal):
             self.partner_item_input.value,
             self.reserve
         )
-        await interaction.response.send_message(
-            "仲介人を指定しますか？",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_message("仲介人を指定しますか？", view=view, ephemeral=True)
 
 
 class MediationMediatorChoiceView(discord.ui.View):
@@ -3373,11 +3229,7 @@ class MediationMediatorChoiceView(discord.ui.View):
         self.partner_item = partner_item
         self.reserve = reserve
 
-    @discord.ui.button(
-        label="指定する",
-        style=discord.ButtonStyle.success,
-        custom_id="mediation_mediator_yes"
-    )
+    @discord.ui.button(label="指定する", style=discord.ButtonStyle.success, custom_id="mediation_mediator_yes")
     async def yes(self, interaction, button):
         data = load_mediation_data()
         gid = str(interaction.guild.id)
@@ -3406,10 +3258,7 @@ class MediationMediatorChoiceView(discord.ui.View):
             options.append(discord.SelectOption(label=m.display_name[:100], value=str(m.id)))
 
         if not options:
-            await interaction.response.send_message(
-                "仲介できるメンバーが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介できるメンバーが見つかりません。", ephemeral=True)
             return
 
         view = MediationMediatorSelectView(
@@ -3417,16 +3266,9 @@ class MediationMediatorChoiceView(discord.ui.View):
             self.content, self.my_item, self.partner_item, self.reserve,
             options[:25]
         )
-        await interaction.response.edit_message(
-            content="仲介人を選択してください。",
-            view=view
-        )
+        await interaction.response.edit_message(content="仲介人を選択してください。", view=view)
 
-    @discord.ui.button(
-        label="指定しない",
-        style=discord.ButtonStyle.secondary,
-        custom_id="mediation_mediator_no"
-    )
+    @discord.ui.button(label="指定しない", style=discord.ButtonStyle.secondary, custom_id="mediation_mediator_no")
     async def no(self, interaction, button):
         await self._create_ticket(interaction, None)
 
@@ -3437,18 +3279,12 @@ class MediationMediatorChoiceView(discord.ui.View):
 
         request_category_id = g.get("request_category_id")
         if not request_category_id:
-            await interaction.response.send_message(
-                "仲介依頼のチケット作成カテゴリーが設定されていません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介依頼のチケット作成カテゴリーが設定されていません。", ephemeral=True)
             return
 
         category = interaction.guild.get_channel(request_category_id)
         if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message(
-                "チケット作成カテゴリーが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("チケット作成カテゴリーが見つかりません。", ephemeral=True)
             return
 
         if self.reserve:
@@ -3471,10 +3307,7 @@ class MediationMediatorChoiceView(discord.ui.View):
             category
         )
 
-        await interaction.response.send_message(
-            "仲介依頼チケットを作成しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("仲介依頼チケットを作成しました。", ephemeral=True)
 
 
 class MediationMediatorSelect(discord.ui.Select):
@@ -3554,17 +3387,11 @@ class MediationMediatorConfirmView(discord.ui.View):
 
         request_category_id = g.get("request_category_id")
         if not request_category_id:
-            await interaction.response.send_message(
-                "仲介依頼のチケット作成カテゴリーが設定されていません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介依頼のチケット作成カテゴリーが設定されていません。", ephemeral=True)
             return
         category = interaction.guild.get_channel(request_category_id)
         if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message(
-                "チケット作成カテゴリーが見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("チケット作成カテゴリーが見つかりません。", ephemeral=True)
             return
 
         if self.reserve:
@@ -3587,10 +3414,7 @@ class MediationMediatorConfirmView(discord.ui.View):
             category
         )
 
-        await interaction.response.send_message(
-            "仲介依頼チケットを作成しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("仲介依頼チケットを作成しました。", ephemeral=True)
 
 
 class MediationReserveTimeModal(discord.ui.Modal):
@@ -3617,16 +3441,11 @@ class MediationReserveTimeModal(discord.ui.Modal):
     async def on_submit(self, interaction):
         try:
             jst = pytz.timezone("Asia/Tokyo")
-            dt = datetime.datetime.strptime(
-                self.time_input.value.strip(), "%Y-%m-%d %H:%M"
-            )
+            dt = datetime.datetime.strptime(self.time_input.value.strip(), "%Y-%m-%d %H:%M")
             dt = jst.localize(dt)
             timestamp = int(dt.timestamp())
         except Exception:
-            await interaction.response.send_message(
-                "時間の形式が正しくありません。例: 2026-10-15 21:00",
-                ephemeral=True
-            )
+            await interaction.response.send_message("時間の形式が正しくありません。例: 2026-10-15 21:00", ephemeral=True)
             return
 
         data = load_mediation_data()
@@ -3657,10 +3476,6 @@ class MediationReserveTimeModal(discord.ui.Modal):
             ephemeral=True
         )
 
-
-# ---------------------------------------------------------
-# 仲介チケット
-# ---------------------------------------------------------
 
 def build_mediation_ticket_embed(guild, requester_id, partner_id,
                                  mediator_id, trade_type, content,
@@ -3696,22 +3511,14 @@ class MediationTicketControlView(discord.ui.View):
         self.support_button.custom_id = f"med_support_{ticket_id}"
         self.complete_button.custom_id = f"med_complete_{ticket_id}"
 
-    @discord.ui.button(
-        label="仲介依頼中断",
-        style=discord.ButtonStyle.danger,
-        emoji="⛔",
-        custom_id="med_abort_default"
-    )
+    @discord.ui.button(label="仲介依頼中断", style=discord.ButtonStyle.danger, emoji="⛔", custom_id="med_abort_default")
     async def abort_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
             await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
             return
         if interaction.user.id not in self.cog.get_mediation_staff_ids(interaction.guild, ticket):
-            await interaction.response.send_message(
-                "仲介人のみ実行できます。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介人のみ実行できます。", ephemeral=True)
             return
 
         await interaction.response.send_message("中断処理を開始します。", ephemeral=True)
@@ -3719,8 +3526,7 @@ class MediationTicketControlView(discord.ui.View):
         requester = ticket["requester_id"]
         partner = ticket["partner_id"]
         await interaction.channel.send(
-            f"<@{requester}> <@{partner}>\n"
-            f"5分後にこの仲介依頼は中断されます。",
+            f"<@{requester}> <@{partner}>\n5分後にこの仲介依頼は中断されます。",
             view=MediationResumeView(self.cog, self.ticket_id)
         )
 
@@ -3737,40 +3543,26 @@ class MediationTicketControlView(discord.ui.View):
 
         asyncio.create_task(abort_after())
 
-    @discord.ui.button(
-        label="仲介対応",
-        style=discord.ButtonStyle.primary,
-        emoji="🤝",
-        custom_id="med_support_default"
-    )
+    @discord.ui.button(label="仲介対応", style=discord.ButtonStyle.primary, emoji="🤝", custom_id="med_support_default")
     async def support_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
             await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
             return
         if interaction.user.id not in self.cog.get_mediation_staff_ids(interaction.guild, ticket):
-            await interaction.response.send_message(
-                "仲介人のみ実行できます。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介人のみ実行できます。", ephemeral=True)
             return
 
         await interaction.response.send_message("対応を開始しました。", ephemeral=True)
-
-        # 対応者を記録
         ticket["supported_by"] = interaction.user.id
 
-        # チャンネル権限を「対応者・取引相手・仲介依頼者」だけ見れるように変更
         guild = interaction.guild
         channel = interaction.channel
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                manage_channels=True,
-                read_message_history=True
+                view_channel=True, send_messages=True, manage_channels=True, read_message_history=True
             ),
         }
 
@@ -3795,26 +3587,16 @@ class MediationTicketControlView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-        await interaction.channel.send(
-            f"{interaction.user.mention} が対応を開始します🤝🥳"
-        )
+        await interaction.channel.send(f"{interaction.user.mention} が対応を開始します🤝🥳")
 
-    @discord.ui.button(
-        label="対応完了",
-        style=discord.ButtonStyle.success,
-        emoji="✅",
-        custom_id="med_complete_default"
-    )
+    @discord.ui.button(label="対応完了", style=discord.ButtonStyle.success, emoji="✅", custom_id="med_complete_default")
     async def complete_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
             await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
             return
         if interaction.user.id not in self.cog.get_mediation_staff_ids(interaction.guild, ticket):
-            await interaction.response.send_message(
-                "仲介人のみ実行できます。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介人のみ実行できます。", ephemeral=True)
             return
 
         requester = ticket["requester_id"]
@@ -3823,9 +3605,7 @@ class MediationTicketControlView(discord.ui.View):
 
         embed = discord.Embed(
             title="仲介が完了しました。",
-            description=(
-                f"仲介者 <@{mediator}>" if mediator else "仲介者 未指定"
-            ),
+            description=(f"仲介者 <@{mediator}>" if mediator else "仲介者 未指定"),
             color=discord.Color.green()
         )
         embed.add_field(
@@ -3854,11 +3634,7 @@ class MediationResumeView(discord.ui.View):
         self.ticket_id = ticket_id
         self.resume_button.custom_id = f"med_resume_{ticket_id}"
 
-    @discord.ui.button(
-        label="依頼を再開する",
-        style=discord.ButtonStyle.success,
-        custom_id="med_resume_default"
-    )
+    @discord.ui.button(label="依頼を再開する", style=discord.ButtonStyle.success, custom_id="med_resume_default")
     async def resume_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
@@ -3880,12 +3656,7 @@ class MediationReviewStartView(discord.ui.View):
         self.review_button.custom_id = f"med_review_{ticket_id}"
         self.end_button.custom_id = f"med_end_{ticket_id}"
 
-    @discord.ui.button(
-        label="評価する",
-        style=discord.ButtonStyle.primary,
-        emoji="⭐",
-        custom_id="med_review_default"
-    )
+    @discord.ui.button(label="評価する", style=discord.ButtonStyle.primary, emoji="⭐", custom_id="med_review_default")
     async def review_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
@@ -3919,25 +3690,13 @@ class MediationReviewStartView(discord.ui.View):
             options.append(discord.SelectOption(label=m.display_name[:100], value=str(m.id)))
 
         if not options:
-            await interaction.response.send_message(
-                "評価できる仲介者が見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("評価できる仲介者が見つかりません。", ephemeral=True)
             return
 
         view = MediationReviewMediatorSelectView(self.cog, self.ticket_id, options[:25])
-        await interaction.response.send_message(
-            "仲介者を選んでください。",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_message("仲介者を選んでください。", view=view, ephemeral=True)
 
-    @discord.ui.button(
-        label="仲介依頼を終了する",
-        style=discord.ButtonStyle.danger,
-        emoji="🔚",
-        custom_id="med_end_default"
-    )
+    @discord.ui.button(label="仲介依頼を終了する", style=discord.ButtonStyle.danger, emoji="🔚", custom_id="med_end_default")
     async def end_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
@@ -3946,16 +3705,10 @@ class MediationReviewStartView(discord.ui.View):
 
         supported_by = ticket.get("supported_by")
         if not supported_by or interaction.user.id != supported_by:
-            await interaction.response.send_message(
-                "仲介対応した人のみ実行できます。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("仲介対応した人のみ実行できます。", ephemeral=True)
             return
 
-        await interaction.response.send_message(
-            "5秒以内に削除します。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("5秒以内に削除します。", ephemeral=True)
 
         async def delete_later():
             await asyncio.sleep(5)
@@ -3970,11 +3723,7 @@ class MediationReviewStartView(discord.ui.View):
 
 class MediationReviewMediatorSelect(discord.ui.Select):
     def __init__(self, cog, ticket_id, options):
-        super().__init__(
-            placeholder="仲介者を選択",
-            options=options,
-            custom_id="med_review_mediator_select"
-        )
+        super().__init__(placeholder="仲介者を選択", options=options, custom_id="med_review_mediator_select")
         self.cog = cog
         self.ticket_id = ticket_id
 
@@ -3999,17 +3748,9 @@ class MediationReviewModal(discord.ui.Modal):
         self.ticket_id = ticket_id
         self.mediator_id = mediator_id
 
-        self.rating_input = discord.ui.TextInput(
-            label="評価（1〜5）",
-            placeholder="5",
-            required=True,
-            max_length=1
-        )
+        self.rating_input = discord.ui.TextInput(label="評価（1〜5）", placeholder="5", required=True, max_length=1)
         self.review_input = discord.ui.TextInput(
-            label="レビュー",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=1000
+            label="レビュー", style=discord.TextStyle.paragraph, required=True, max_length=1000
         )
         self.add_item(self.rating_input)
         self.add_item(self.review_input)
@@ -4020,10 +3761,7 @@ class MediationReviewModal(discord.ui.Modal):
             if rating < 1 or rating > 5:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message(
-                "評価は1〜5の数字で入力してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("評価は1〜5の数字で入力してください。", ephemeral=True)
             return
 
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
@@ -4067,17 +3805,10 @@ class MediationReviewModal(discord.ui.Modal):
         await interaction.response.send_message("レビューを送信しました。", ephemeral=True)
 
 
-# ---------------------------------------------------------
-# 仲介予約キャンセルビュー
-# ---------------------------------------------------------
-
 class MediationReservationCancelSelect(discord.ui.Select):
     def __init__(self, cog, options):
-        super().__init__(
-            placeholder="キャンセルする予約を選択",
-            options=options,
-            custom_id="mediation_reservation_cancel_select"
-        )
+        super().__init__(placeholder="キャンセルする予約を選択", options=options,
+                         custom_id="mediation_reservation_cancel_select")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -4107,10 +3838,7 @@ class MediationReservationCancelSelect(discord.ui.Select):
 
         self.cog.mediation_reservation_tasks.pop(res_id, None)
 
-        await interaction.response.edit_message(
-            content=f"予約ID `{res_id}` をキャンセルしました。",
-            view=None
-        )
+        await interaction.response.edit_message(content=f"予約ID `{res_id}` をキャンセルしました。", view=None)
 
 
 class MediationReservationCancelView(discord.ui.View):
@@ -4204,10 +3932,6 @@ class SlashCog(commands.Cog):
         task = asyncio.create_task(runner())
         self.periodic_tasks[key] = task
 
-    # -----------------------------------------------------
-    # 仲介: スタッフID取得
-    # -----------------------------------------------------
-
     def get_mediation_staff_ids(self, guild, ticket):
         if ticket.get("mediator_id"):
             return {ticket["mediator_id"]}
@@ -4221,10 +3945,6 @@ class SlashCog(commands.Cog):
                     ids.add(m.id)
         return ids
 
-    # -----------------------------------------------------
-    # 仲介: チケット作成
-    # -----------------------------------------------------
-
     async def create_mediation_ticket(
         self, guild, requester, partner_id, mediator_id,
         trade_type, content, my_item, partner_item, category
@@ -4233,9 +3953,7 @@ class SlashCog(commands.Cog):
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            requester: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True
-            ),
+            requester: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
             guild.me: discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, manage_channels=True, read_message_history=True
             ),
@@ -4293,11 +4011,7 @@ class SlashCog(commands.Cog):
 
         view = MediationTicketControlView(self, ticket_id)
 
-        message = await ticket_channel.send(
-            content=mention_text,
-            embed=embed,
-            view=view
-        )
+        message = await ticket_channel.send(content=mention_text, embed=embed, view=view)
 
         self.mediation_tickets[ticket_id] = {
             "id": ticket_id,
@@ -4317,10 +4031,6 @@ class SlashCog(commands.Cog):
         }
 
         return ticket_channel
-
-    # -----------------------------------------------------
-    # 仲介: 予約スケジュール
-    # -----------------------------------------------------
 
     def schedule_mediation_reservation(self, res_id, timestamp):
         if res_id in self.mediation_reservation_tasks:
@@ -4379,10 +4089,6 @@ class SlashCog(commands.Cog):
         task = asyncio.create_task(runner())
         self.mediation_reservation_tasks[res_id] = task
 
-    # -----------------------------------------------------
-    # 仲介: 予約確認
-    # -----------------------------------------------------
-
     async def show_mediation_reservations(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -4405,10 +4111,7 @@ class SlashCog(commands.Cog):
         if not targets:
             return await interaction.response.send_message("あなたの予約はありません。", ephemeral=True)
 
-        embed = discord.Embed(
-            title="📅 仲介予約一覧",
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title="📅 仲介予約一覧", color=discord.Color.blurple())
 
         for r in targets[:25]:
             ts = r.get("timestamp", 0)
@@ -4428,10 +4131,6 @@ class SlashCog(commands.Cog):
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # -----------------------------------------------------
-    # 仲介: 予約キャンセル
-    # -----------------------------------------------------
 
     async def cancel_mediation_reservation(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -4465,28 +4164,17 @@ class SlashCog(commands.Cog):
             ))
 
         view = MediationReservationCancelView(self, options)
-        await interaction.response.send_message(
-            "キャンセルする予約を選択してください。",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_message("キャンセルする予約を選択してください。", view=view, ephemeral=True)
 
     # -----------------------------------------------------
     # /nuke
     # -----------------------------------------------------
 
-    @app_commands.command(
-        name="nuke",
-        description="現在のテキストチャンネルを再作成します"
-    )
+    @app_commands.command(name="nuke", description="現在のテキストチャンネルを再作成します")
     async def nuke(self, interaction):
         if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "テキストチャンネルで使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
             return
-
         await interaction.response.send_message(
             "本当にこのチャンネルを再作成しますか？",
             view=ConfirmNukeView(interaction.channel),
@@ -4494,68 +4182,172 @@ class SlashCog(commands.Cog):
         )
 
     # -----------------------------------------------------
+    # /ロック
+    # -----------------------------------------------------
+
+    @app_commands.command(name="ロック", description="チャンネルをロックします")
+    @app_commands.describe(role="任意：@everyone以外に送信を禁止するロール（省略時は@everyoneのみ）")
+    async def lock(self, interaction: discord.Interaction, role: discord.Role = None):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
+            return
+
+        channel = interaction.channel
+        overwrites = channel.overwrites
+
+        everyone_ow = overwrites.get(interaction.guild.default_role) or discord.PermissionOverwrite()
+        everyone_ow.send_messages = False
+        everyone_ow.create_public_threads = False
+        everyone_ow.create_private_threads = False
+        overwrites[interaction.guild.default_role] = everyone_ow
+
+        if role is not None and not role.is_default():
+            role_ow = overwrites.get(role) or discord.PermissionOverwrite()
+            role_ow.send_messages = False
+            role_ow.create_public_threads = False
+            role_ow.create_private_threads = False
+            overwrites[role] = role_ow
+
+        try:
+            await channel.edit(overwrites=overwrites)
+        except discord.Forbidden:
+            await interaction.response.send_message("Botにチャンネル管理権限がありません。", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"ロックに失敗しました: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            description=(
+                f"⚠️ {interaction.user.mention} : {channel.mention} をロックしました。\n"
+                f"`/アンロック` でチャンネルをアンロックできます"
+            ),
+            color=discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    # -----------------------------------------------------
+    # /アンロック
+    # -----------------------------------------------------
+
+    @app_commands.command(name="アンロック", description="チャンネルのロックを解除します")
+    @app_commands.describe(role="任意：@everyone以外に解除するロール（省略時は@everyoneのみ）")
+    async def unlock(self, interaction: discord.Interaction, role: discord.Role = None):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
+            return
+
+        channel = interaction.channel
+        overwrites = channel.overwrites
+
+        everyone_ow = overwrites.get(interaction.guild.default_role) or discord.PermissionOverwrite()
+        everyone_ow.send_messages = None
+        everyone_ow.create_public_threads = None
+        everyone_ow.create_private_threads = None
+        overwrites[interaction.guild.default_role] = everyone_ow
+
+        if role is not None and not role.is_default():
+            role_ow = overwrites.get(role) or discord.PermissionOverwrite()
+            role_ow.send_messages = None
+            role_ow.create_public_threads = None
+            role_ow.create_private_threads = None
+            overwrites[role] = role_ow
+
+        try:
+            await channel.edit(overwrites=overwrites)
+        except discord.Forbidden:
+            await interaction.response.send_message("Botにチャンネル管理権限がありません。", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"アンロックに失敗しました: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            description=(
+                f"✅ {interaction.user.mention} : {channel.mention} をアンロックしました。\n"
+                f"再び `/ロック` でチャンネルをロックできます"
+            ),
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    # -----------------------------------------------------
+    # /ロール付与
+    # -----------------------------------------------------
+
+    @app_commands.command(name="ロール付与", description="指定したユーザーまたは全員にロールを付与します")
+    @app_commands.describe(role="付与するロール", target="付与対象（省略時は全員）")
+    async def role_grant(self, interaction: discord.Interaction, role: discord.Role, target: discord.Member = None):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        if role.is_default() or role.managed:
+            await interaction.response.send_message("このロールは付与できません。", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        if target is not None:
+            targets = [target]
+        else:
+            targets = [m for m in interaction.guild.members if not m.bot and role not in m.roles]
+
+        success = 0
+        failed = 0
+        for member in targets:
+            try:
+                await member.add_roles(role, reason=f"/ロール付与 by {interaction.user}")
+                success += 1
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+
+        if target is not None:
+            msg = f"{target.mention} に {role.mention} を付与しました。"
+        else:
+            msg = f"{role.mention} を {success}人 に付与しました。"
+            if failed:
+                msg += f"（失敗: {failed}人）"
+
+        await interaction.followup.send(msg, ephemeral=True)
+
+    # -----------------------------------------------------
     # /配布作成
     # -----------------------------------------------------
 
-    @app_commands.command(
-        name="配布作成",
-        description="景品の配布を作成し、同時に開始します"
-    )
-    @app_commands.describe(
-        prize="景品名",
-        duration="配布期間（例: 30m、1h、1d、1week）",
-        winners="当選人数"
-    )
-    async def giveaway_create(
-        self,
-        interaction,
-        prize: str,
-        duration: str,
-        winners: app_commands.Range[int, 1, 20] = 1
-    ):
+    @app_commands.command(name="配布作成", description="景品の配布を作成し、同時に開始します")
+    @app_commands.describe(prize="景品名", duration="配布期間（例: 30m、1h、1d、1week）", winners="当選人数")
+    async def giveaway_create(self, interaction, prize: str, duration: str,
+                              winners: app_commands.Range[int, 1, 20] = 1):
         if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "テキストチャンネルで使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
             return
 
         try:
             seconds = parse_duration(duration)
         except ValueError as error:
-            await interaction.response.send_message(
-                str(error),
-                ephemeral=True
-            )
+            await interaction.response.send_message(str(error), ephemeral=True)
             return
 
         giveaway_id = uuid.uuid4().hex[:12]
         end_time = int(time.time() + seconds)
 
-        view = GiveawayView(
-            self, giveaway_id, prize, winners, end_time
-        )
+        view = GiveawayView(self, giveaway_id, prize, winners, end_time)
 
         await interaction.response.send_message(
             f"配布「{prize}」を開始しました。期間: {duration}",
             ephemeral=True
         )
 
-        message = await interaction.channel.send(
-            embed=view.make_embed(),
-            view=view
-        )
+        message = await interaction.channel.send(embed=view.make_embed(), view=view)
         view.message = message
-
         self.active_giveaways[message.id] = view
 
         async def finish():
             try:
                 await asyncio.sleep(seconds)
-
                 if view.ended:
                     return
-
                 view.ended = True
                 await view.refresh()
 
@@ -4575,7 +4367,6 @@ class SlashCog(commands.Cog):
                     await view.message.channel.send(result)
                 except discord.HTTPException:
                     pass
-
             except asyncio.CancelledError:
                 pass
             except discord.HTTPException:
@@ -4586,14 +4377,7 @@ class SlashCog(commands.Cog):
 
         asyncio.create_task(finish())
 
-    # -----------------------------------------------------
-    # /配布終了
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="配布終了",
-        description="開催中の配布を選択して即座に終了し、当選者を発表します"
-    )
+    @app_commands.command(name="配布終了", description="開催中の配布を選択して即座に終了し、当選者を発表します")
     async def giveaway_stop(self, interaction):
         guild_giveaways = {}
         for mid, view in self.active_giveaways.items():
@@ -4603,38 +4387,21 @@ class SlashCog(commands.Cog):
                 guild_giveaways[mid] = view
 
         if not guild_giveaways:
-            await interaction.response.send_message(
-                "開催中の配布が見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("開催中の配布が見つかりません。", ephemeral=True)
             return
 
         options = []
         for mid, view in list(guild_giveaways.items())[:25]:
-            options.append(
-                discord.SelectOption(
-                    label=f"{view.prize[:50]}",
-                    description=f"ID: {mid} / 参加者: {len(view.participants)}人",
-                    value=str(mid)
-                )
-            )
+            options.append(discord.SelectOption(
+                label=f"{view.prize[:50]}",
+                description=f"ID: {mid} / 参加者: {len(view.participants)}人",
+                value=str(mid)
+            ))
 
         view = StopGiveawayView(self, options)
+        await interaction.response.send_message("終了する配布を選択してください。", view=view, ephemeral=True)
 
-        await interaction.response.send_message(
-            "終了する配布を選択してください。",
-            view=view,
-            ephemeral=True
-        )
-
-    # -----------------------------------------------------
-    # /配布再抽選
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="配布再抽選",
-        description="終了した配布を選択して当選者を再抽選します"
-    )
+    @app_commands.command(name="配布再抽選", description="終了した配布を選択して当選者を再抽選します")
     async def giveaway_redraw(self, interaction):
         guild_giveaways = {}
         for mid, view in self.ended_giveaways.items():
@@ -4644,38 +4411,21 @@ class SlashCog(commands.Cog):
                 guild_giveaways[mid] = view
 
         if not guild_giveaways:
-            await interaction.response.send_message(
-                "再抽選できる配布が見つかりません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("再抽選できる配布が見つかりません。", ephemeral=True)
             return
 
         options = []
         for mid, view in list(guild_giveaways.items())[:25]:
-            options.append(
-                discord.SelectOption(
-                    label=f"{view.prize[:50]}",
-                    description=f"ID: {mid} / 参加者: {len(view.participants)}人",
-                    value=str(mid)
-                )
-            )
+            options.append(discord.SelectOption(
+                label=f"{view.prize[:50]}",
+                description=f"ID: {mid} / 参加者: {len(view.participants)}人",
+                value=str(mid)
+            ))
 
         view = RedrawGiveawayView(self, options)
+        await interaction.response.send_message("再抽選する配布を選択してください。", view=view, ephemeral=True)
 
-        await interaction.response.send_message(
-            "再抽選する配布を選択してください。",
-            view=view,
-            ephemeral=True
-        )
-
-    # -----------------------------------------------------
-    # /埋め込み送信
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="埋め込み送信",
-        description="埋め込みメッセージを送信します（画像はファイル選択）"
-    )
+    @app_commands.command(name="埋め込み送信", description="埋め込みメッセージを送信します（画像はファイル選択）")
     @app_commands.describe(
         title="埋め込みのタイトル",
         description="埋め込みの説明",
@@ -4683,20 +4433,10 @@ class SlashCog(commands.Cog):
         footer="フッター",
         image="画像ファイル（自分のPCから選択）"
     )
-    async def embed(
-        self,
-        interaction,
-        title: str,
-        description: str,
-        color: str = None,
-        footer: str = None,
-        image: discord.Attachment = None
-    ):
+    async def embed(self, interaction, title: str, description: str,
+                    color: str = None, footer: str = None, image: discord.Attachment = None):
         if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "テキストチャンネルで使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -4713,33 +4453,15 @@ class SlashCog(commands.Cog):
             file = await image.to_file()
             embed.set_image(url=f"attachment://{image.filename}")
 
-        await interaction.response.send_message(
-            "埋め込みを送信しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("埋め込みを送信しました。", ephemeral=True)
         if file:
             await interaction.channel.send(embed=embed, file=file)
         else:
             await interaction.channel.send(embed=embed)
 
-    # -----------------------------------------------------
-    # /dm送信
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="dm送信",
-        description="指定したユーザーにDMを送信します"
-    )
-    @app_commands.describe(
-        user="送信先のユーザー",
-        message="送信するメッセージ"
-    )
-    async def dm_anc(
-        self,
-        interaction,
-        user: discord.User,
-        message: str
-    ):
+    @app_commands.command(name="dm送信", description="指定したユーザーにDMを送信します")
+    @app_commands.describe(user="送信先のユーザー", message="送信するメッセージ")
+    async def dm_anc(self, interaction, user: discord.User, message: str):
         try:
             await user.send(message)
         except discord.Forbidden:
@@ -4749,129 +4471,66 @@ class SlashCog(commands.Cog):
             )
             return
         except discord.HTTPException:
-            await interaction.response.send_message(
-                "DMの送信に失敗しました。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("DMの送信に失敗しました。", ephemeral=True)
             return
 
-        await interaction.response.send_message(
-            f"{user.mention} にDMを送信しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"{user.mention} にDMを送信しました。", ephemeral=True)
 
-    # -----------------------------------------------------
-    # /認証パネル
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="認証パネル",
-        description="認証パネルを作成します"
-    )
+    @app_commands.command(name="認証パネル", description="認証パネルを作成します")
     @app_commands.describe(
         type="認証方法（計算認証 or ボタン認証）",
         title="パネルのタイトル（任意）",
         description="パネルの説明（任意）",
         role="認証後に付与するロール（省略時は選択メニュー）"
     )
-    @app_commands.choices(
-        type=[
-            app_commands.Choice(name="計算認証", value="math"),
-            app_commands.Choice(name="ボタン認証", value="button")
-        ]
-    )
-    async def verify(
-        self,
-        interaction,
-        type: app_commands.Choice[str] = None,
-        title: str = "認証",
-        description: str = "下のボタンから認証してください。",
-        role: discord.Role = None
-    ):
+    @app_commands.choices(type=[
+        app_commands.Choice(name="計算認証", value="math"),
+        app_commands.Choice(name="ボタン認証", value="button")
+    ])
+    async def verify(self, interaction, type: app_commands.Choice[str] = None,
+                     title: str = "認証", description: str = "下のボタンから認証してください。",
+                     role: discord.Role = None):
         if not interaction.guild:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
             return
 
         verify_type = type.value if type else "button"
 
         if role is not None:
             if role.is_default() or role.managed:
-                await interaction.response.send_message(
-                    "このロールは設定できません。",
-                    ephemeral=True
-                )
+                await interaction.response.send_message("このロールは設定できません。", ephemeral=True)
                 return
 
             view = VerifyView(self, role, verify_type)
-            embed = build_verify_embed(
-                title, description, role, interaction.guild_id
-            )
-
-            await interaction.response.send_message(
-                "認証パネルを作成しました。",
-                ephemeral=True
-            )
+            embed = build_verify_embed(title, description, role, interaction.guild_id)
+            await interaction.response.send_message("認証パネルを作成しました。", ephemeral=True)
             await interaction.channel.send(embed=embed, view=view)
             return
 
         roles = [
             r for r in interaction.guild.roles
-            if not r.is_default()
-            and not r.managed
-            and not r.is_premium_subscriber()
+            if not r.is_default() and not r.managed and not r.is_premium_subscriber()
         ]
 
         if not roles:
-            await interaction.response.send_message(
-                "設定できるロールがありません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("設定できるロールがありません。", ephemeral=True)
             return
 
-        options = [
-            discord.SelectOption(
-                label=r.name[:100],
-                value=str(r.id)
-            )
-            for r in roles[:25]
-        ]
-
-        view = VerifyRoleSelectView(
-            self, verify_type, title, description
-        )
+        options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles[:25]]
+        view = VerifyRoleSelectView(self, verify_type, title, description)
         view.role_select.options = options
 
-        await interaction.response.send_message(
-            "認証後に付与するロールを選択してください。",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_message("認証後に付与するロールを選択してください。", view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /実績パネル
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="実績パネル",
-        description="実績送信パネルを作成します"
-    )
+    @app_commands.command(name="実績パネル", description="実績送信パネルを作成します")
     @app_commands.describe(
         destination="実績を送信するチャンネル",
         title="パネルタイトル",
         description="パネル説明",
         counter_channel="任意：実績数を表示するチャンネル"
     )
-    async def vouch_panel(
-        self,
-        interaction,
-        destination: discord.TextChannel,
-        title: str,
-        description: str,
-        counter_channel: discord.TextChannel = None
-    ):
+    async def vouch_panel(self, interaction, destination: discord.TextChannel,
+                          title: str, description: str, counter_channel: discord.TextChannel = None):
         panel_id = uuid.uuid4().hex[:10]
 
         self.vouch_panels[panel_id] = {
@@ -4880,54 +4539,25 @@ class SlashCog(commands.Cog):
             "description": description,
             "count": 0,
             "counter_id": counter_channel.id if counter_channel else None,
-            "counter_base_name": (
-                counter_channel.name if counter_channel else None
-            )
+            "counter_base_name": (counter_channel.name if counter_channel else None)
         }
 
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
         embed.set_footer(text=f"Vouch Panel: {panel_id}")
-
         view = VouchView(self, panel_id)
 
-        await interaction.response.send_message(
-            "実績パネルを作成しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("実績パネルを作成しました。", ephemeral=True)
         await interaction.channel.send(embed=embed, view=view)
 
-    # -----------------------------------------------------
-    # /対応状況
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="対応状況",
-        description="対応状況パネルを表示します"
-    )
-    @app_commands.describe(
-        description="パネルの説明（任意）"
-    )
-    async def status(
-        self,
-        interaction: discord.Interaction,
-        description: str = "現在の対応状況です。"
-    ):
+    @app_commands.command(name="対応状況", description="対応状況パネルを表示します")
+    @app_commands.describe(description="パネルの説明（任意）")
+    async def status(self, interaction: discord.Interaction, description: str = "現在の対応状況です。"):
         if not interaction.guild:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
             return
 
         if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "テキストチャンネルで使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
             return
 
         panel_id = uuid.uuid4().hex[:10]
@@ -4941,12 +4571,7 @@ class SlashCog(commands.Cog):
             member = interaction.guild.get_member(uid)
             if not member:
                 continue
-            staff_list.append({
-                "user_id": uid,
-                "status": "対応可能",
-                "emoji": "🟢",
-                "message": ""
-            })
+            staff_list.append({"user_id": uid, "status": "対応可能", "emoji": "🟢", "message": ""})
 
         panel = {
             "id": panel_id,
@@ -4971,32 +4596,13 @@ class SlashCog(commands.Cog):
         data[panel_id] = panel
         save_status_panel_data(data)
 
-        await interaction.response.send_message(
-            "ステータスパネルを作成しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("ステータスパネルを作成しました。", ephemeral=True)
 
-    # -----------------------------------------------------
-    # /対応状況スタッフ追加
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="対応状況スタッフ追加",
-        description="対応状況パネルに表示するスタッフを追加します"
-    )
-    @app_commands.describe(
-        user="追加するスタッフ"
-    )
-    async def status_staff_add(
-        self,
-        interaction: discord.Interaction,
-        user: discord.Member
-    ):
+    @app_commands.command(name="対応状況スタッフ追加", description="対応状況パネルに表示するスタッフを追加します")
+    @app_commands.describe(user="追加するスタッフ")
+    async def status_staff_add(self, interaction: discord.Interaction, user: discord.Member):
         if not interaction.guild:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
             return
 
         data = load_status_staff_data()
@@ -5005,8 +4611,7 @@ class SlashCog(commands.Cog):
 
         if user.id in staff_ids:
             await interaction.response.send_message(
-                f"{user.mention} は既にスタッフとして登録されています。",
-                ephemeral=True
+                f"{user.mention} は既にスタッフとして登録されています。", ephemeral=True
             )
             return
 
@@ -5015,43 +4620,20 @@ class SlashCog(commands.Cog):
         save_status_staff_data(data)
 
         for panel in self.status_panels.values():
-            if panel.get("channel_id") and \
-               interaction.guild.get_channel(panel["channel_id"]):
+            if panel.get("channel_id") and interaction.guild.get_channel(panel["channel_id"]):
                 if not any(s["user_id"] == user.id for s in panel["staff"]):
-                    panel["staff"].append({
-                        "user_id": user.id,
-                        "status": "対応可能",
-                        "emoji": "🟢",
-                        "message": ""
-                    })
+                    panel["staff"].append({"user_id": user.id, "status": "対応可能", "emoji": "🟢", "message": ""})
                     await self.refresh_status(panel)
 
         await interaction.response.send_message(
-            f"{user.mention} を対応状況スタッフに追加しました。",
-            ephemeral=True
+            f"{user.mention} を対応状況スタッフに追加しました。", ephemeral=True
         )
 
-    # -----------------------------------------------------
-    # /対応状況スタッフ削除
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="対応状況スタッフ削除",
-        description="対応状況パネルからスタッフを削除します"
-    )
-    @app_commands.describe(
-        user="削除するスタッフ"
-    )
-    async def status_staff_remove(
-        self,
-        interaction: discord.Interaction,
-        user: discord.Member
-    ):
+    @app_commands.command(name="対応状況スタッフ削除", description="対応状況パネルからスタッフを削除します")
+    @app_commands.describe(user="削除するスタッフ")
+    async def status_staff_remove(self, interaction: discord.Interaction, user: discord.Member):
         if not interaction.guild:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
             return
 
         data = load_status_staff_data()
@@ -5060,8 +4642,7 @@ class SlashCog(commands.Cog):
 
         if user.id not in staff_ids:
             await interaction.response.send_message(
-                f"{user.mention} はスタッフとして登録されていません。",
-                ephemeral=True
+                f"{user.mention} はスタッフとして登録されていません。", ephemeral=True
             )
             return
 
@@ -5074,83 +4655,49 @@ class SlashCog(commands.Cog):
             await self.refresh_status(panel)
 
         await interaction.response.send_message(
-            f"{user.mention} を対応状況スタッフから削除しました。",
-            ephemeral=True
+            f"{user.mention} を対応状況スタッフから削除しました。", ephemeral=True
         )
 
     # -----------------------------------------------------
-    # /チケット
+    # /チケット（対話式・セレクトメニューパネル）
     # -----------------------------------------------------
 
-    @app_commands.command(
-        name="チケット",
-        description="チケットパネルを対話形式で作成します"
-    )
+    @app_commands.command(name="チケット", description="チケットパネルを対話形式で作成します")
     async def ticket(self, interaction: discord.Interaction):
         if not interaction.guild:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
             return
 
         view = TicketSetupModeView(self, interaction.user.id)
         await interaction.response.send_message(
             "**チケットパネルの作成方式を選択してください。**\n\n"
-            "・**1ボタン式**：シンプルに1つのボタンでチケットを作成します。\n"
+            "・**1ボタン式**：シンプルに1つのセレクトメニューでチケットを作成します。\n"
             "・**複数項目から選ぶ式**：ユーザーが要件を選択してチケットを作成します。\n"
             "　要件ごとに絵文字とセレクトのプレースホルダー文言を設定できます。",
             view=view,
             ephemeral=True
         )
 
-    # -----------------------------------------------------
-    # /チケットパネル編集
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="チケットパネル編集",
-        description="チケットパネルを編集します"
-    )
+    @app_commands.command(name="チケットパネル編集", description="チケットパネルを編集します")
     async def ticket_edit(self, interaction):
-        guild_panels = {
-            pid: panel for pid, panel in self.ticket_panels.items()
-            if panel.get("channel_id")
-        }
+        guild_panels = {pid: panel for pid, panel in self.ticket_panels.items() if panel.get("channel_id")}
 
         if not guild_panels:
-            await interaction.response.send_message(
-                "編集できるチケットパネルがありません。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("編集できるチケットパネルがありません。", ephemeral=True)
             return
 
         options = []
         for pid, panel in list(guild_panels.items())[:25]:
-            options.append(
-                discord.SelectOption(
-                    label=f"{panel['button_label'][:50]}",
-                    description=f"ID: {pid}",
-                    value=pid
-                )
-            )
+            options.append(discord.SelectOption(
+                label=f"{panel.get('panel_title', panel.get('button_label', 'パネル'))[:50]}",
+                description=f"ID: {pid}",
+                value=pid
+            ))
 
         view = TicketEditSelectView(self, options)
+        await interaction.response.send_message("編集するチケットパネルを選択してください。", view=view, ephemeral=True)
 
-        await interaction.response.send_message(
-            "編集するチケットパネルを選択してください。",
-            view=view,
-            ephemeral=True
-        )
-
-    # -----------------------------------------------------
-    # /入室退出通知
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="入室退出通知",
-        description="メンバーの入室・退室通知を設定します"
-    )
+    @app_commands.command(name="入室退出通知", description="メンバーの入室・退室通知を設定します")
     async def member_log(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5168,14 +4715,7 @@ class SlashCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /荒らし対策
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="荒らし対策",
-        description="荒らし対策の設定を行います"
-    )
+    @app_commands.command(name="荒らし対策", description="荒らし対策の設定を行います")
     async def antiraid(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5191,24 +4731,10 @@ class SlashCog(commands.Cog):
         view = AntiraidSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /固定メッセージ
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="固定メッセージ",
-        description="固定メッセージを設定します（チャンネルにメッセージが送信されると自動で投稿されます）"
-    )
-    @app_commands.describe(
-        channel="対象チャンネル",
-        text="固定メッセージ本文"
-    )
-    async def fixed_message(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        text: str
-    ):
+    @app_commands.command(name="固定メッセージ", description="固定メッセージを設定します")
+    @app_commands.describe(channel="対象チャンネル", text="固定メッセージ本文")
+    async def fixed_message(self, interaction: discord.Interaction,
+                            channel: discord.TextChannel, text: str):
         await interaction.response.defer(ephemeral=True)
 
         formatted = f"__**Stickied Message:**__\n\n{text}"
@@ -5245,19 +4771,12 @@ class SlashCog(commands.Cog):
             return
 
         await interaction.followup.send(
-            f"固定メッセージを設定しました。\n"
-            f"このチャンネルにメッセージが送信されると、Botが自動で固定メッセージを投稿します。",
+            "固定メッセージを設定しました。\n"
+            "このチャンネルにメッセージが送信されると、Botが自動で固定メッセージを投稿します。",
             ephemeral=True
         )
 
-    # -----------------------------------------------------
-    # /固定メッセージ解除
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="固定メッセージ解除",
-        description="固定メッセージを解除します"
-    )
+    @app_commands.command(name="固定メッセージ解除", description="固定メッセージを解除します")
     async def fixed_message_remove(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5272,22 +4791,12 @@ class SlashCog(commands.Cog):
             channel = interaction.guild.get_channel(int(cid))
             ch_name = channel.name if channel else cid
             preview = info["text"][:50] + ("..." if len(info["text"]) > 50 else "")
-            options.append(discord.SelectOption(
-                label=f"#{ch_name}: {preview}",
-                value=cid
-            ))
+            options.append(discord.SelectOption(label=f"#{ch_name}: {preview}", value=cid))
 
         view = FixedMessageRemoveView(options)
         await interaction.response.send_message("解除する固定メッセージを選択してください。", view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /自動リアクション（会話形式）
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="自動リアクション",
-        description="指定チャンネルのメッセージに自動でリアクションします"
-    )
+    @app_commands.command(name="自動リアクション", description="指定チャンネルのメッセージに自動でリアクションします")
     async def auto_reaction(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5300,14 +4809,7 @@ class SlashCog(commands.Cog):
         view = AutoReactionSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /自動リアクション解除
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="自動リアクション解除",
-        description="自動リアクションを解除します"
-    )
+    @app_commands.command(name="自動リアクション解除", description="自動リアクションを解除します")
     async def auto_reaction_remove(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5322,10 +4824,7 @@ class SlashCog(commands.Cog):
             channel = interaction.guild.get_channel(int(cid))
             ch_name = channel.name if channel else cid
             for e in emojis:
-                options.append(discord.SelectOption(
-                    label=f"#{ch_name} : {e}",
-                    value=f"{cid}:{e}"
-                ))
+                options.append(discord.SelectOption(label=f"#{ch_name} : {e}", value=f"{cid}:{e}"))
 
         if not options:
             return await interaction.response.send_message("解除できるリアクションがありません。", ephemeral=True)
@@ -5333,62 +4832,34 @@ class SlashCog(commands.Cog):
         view = AutoReactionRemoveView(options)
         await interaction.response.send_message("解除する絵文字を選択してください（複数可）。", view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /ロール付与パネル
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="ロール付与パネル",
-        description="リアクションでロールを付与するパネルを作成します"
-    )
+    @app_commands.command(name="ロール付与パネル", description="リアクションでロールを付与するパネルを作成します")
     @app_commands.describe(
-        role1="1つ目のロール",
-        emoji1="1つ目のロールの絵文字",
-        role2="2つ目のロール（任意）",
-        emoji2="2つ目のロールの絵文字（任意）",
-        role3="3つ目のロール（任意）",
-        emoji3="3つ目のロールの絵文字（任意）",
-        role4="4つ目のロール（任意）",
-        emoji4="4つ目のロールの絵文字（任意）",
-        role5="5つ目のロール（任意）",
-        emoji5="5つ目のロールの絵文字（任意）",
-        role6="6つ目のロール（任意）",
-        emoji6="6つ目のロールの絵文字（任意）",
-        title="パネルのタイトル（任意）",
-        description="パネルの説明（任意）",
+        role1="1つ目のロール", emoji1="1つ目のロールの絵文字",
+        role2="2つ目のロール（任意）", emoji2="2つ目のロールの絵文字（任意）",
+        role3="3つ目のロール（任意）", emoji3="3つ目のロールの絵文字（任意）",
+        role4="4つ目のロール（任意）", emoji4="4つ目のロールの絵文字（任意）",
+        role5="5つ目のロール（任意）", emoji5="5つ目のロールの絵文字（任意）",
+        role6="6つ目のロール（任意）", emoji6="6つ目のロールの絵文字（任意）",
+        title="パネルのタイトル（任意）", description="パネルの説明（任意）",
     )
     async def role_panel(
-        self,
-        interaction: discord.Interaction,
-        role1: discord.Role,
-        emoji1: str,
-        role2: discord.Role = None,
-        emoji2: str = None,
-        role3: discord.Role = None,
-        emoji3: str = None,
-        role4: discord.Role = None,
-        emoji4: str = None,
-        role5: discord.Role = None,
-        emoji5: str = None,
-        role6: discord.Role = None,
-        emoji6: str = None,
+        self, interaction: discord.Interaction,
+        role1: discord.Role, emoji1: str,
+        role2: discord.Role = None, emoji2: str = None,
+        role3: discord.Role = None, emoji3: str = None,
+        role4: discord.Role = None, emoji4: str = None,
+        role5: discord.Role = None, emoji5: str = None,
+        role6: discord.Role = None, emoji6: str = None,
         title: str = "ロール付与パネル",
         description: str = "以下のリアクションからロールを受け取ってください",
     ):
         if not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message(
-                "テキストチャンネルで使用してください。",
-                ephemeral=True
-            )
+            return await interaction.response.send_message("テキストチャンネルで使用してください。", ephemeral=True)
 
         pairs = []
         for role, emoji in [
-            (role1, emoji1),
-            (role2, emoji2),
-            (role3, emoji3),
-            (role4, emoji4),
-            (role5, emoji5),
-            (role6, emoji6),
+            (role1, emoji1), (role2, emoji2), (role3, emoji3),
+            (role4, emoji4), (role5, emoji5), (role6, emoji6),
         ]:
             if role and emoji:
                 if role.is_default() or role.managed:
@@ -5396,16 +4867,9 @@ class SlashCog(commands.Cog):
                 pairs.append({"role_id": role.id, "emoji": emoji})
 
         if not pairs:
-            return await interaction.response.send_message(
-                "有効なロールと絵文字の組み合わせがありません。",
-                ephemeral=True
-            )
+            return await interaction.response.send_message("有効なロールと絵文字の組み合わせがありません。", ephemeral=True)
 
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
 
         lines = []
         for p in pairs:
@@ -5413,11 +4877,7 @@ class SlashCog(commands.Cog):
             if role:
                 lines.append(f"{p['emoji']} → {role.mention}")
 
-        embed.add_field(
-            name="リアクション一覧",
-            value="\n".join(lines) if lines else "設定なし",
-            inline=False
-        )
+        embed.add_field(name="リアクション一覧", value="\n".join(lines) if lines else "設定なし", inline=False)
         embed.set_footer(text="もう一度押すとロールが外れます / Developer @anzy1m")
 
         await interaction.response.send_message("パネルを作成しました。", ephemeral=True)
@@ -5430,32 +4890,13 @@ class SlashCog(commands.Cog):
                 print(f"リアクション付与失敗: {e}")
 
         data = load_role_panel_data()
-        data[str(message.id)] = {
-            "guild_id": interaction.guild.id,
-            "pairs": pairs
-        }
+        data[str(message.id)] = {"guild_id": interaction.guild.id, "pairs": pairs}
         save_role_panel_data(data)
 
-    # -----------------------------------------------------
-    # /招待キャンペーン
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="招待キャンペーン",
-        description="招待キャンペーンを作成します"
-    )
-    @app_commands.describe(
-        duration="キャンペーン期間（例: 1d, 1w）",
-        title="キャンペーンタイトル",
-        description="キャンペーン説明"
-    )
-    async def invite_campaign(
-        self,
-        interaction: discord.Interaction,
-        duration: str,
-        title: str,
-        description: str
-    ):
+    @app_commands.command(name="招待キャンペーン", description="招待キャンペーンを作成します")
+    @app_commands.describe(duration="キャンペーン期間（例: 1d, 1w）", title="キャンペーンタイトル", description="キャンペーン説明")
+    async def invite_campaign(self, interaction: discord.Interaction,
+                              duration: str, title: str, description: str):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
@@ -5484,11 +4925,7 @@ class SlashCog(commands.Cog):
         }
         save_invite_campaign_data(data)
 
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
         embed.add_field(name="期間", value=f"<t:{end_time}:R>", inline=False)
 
         view = InviteCampaignView(self, campaign_id)
@@ -5506,27 +4943,16 @@ class SlashCog(commands.Cog):
 
         asyncio.create_task(finish())
 
-    # -----------------------------------------------------
-    # /招待キャンペーン停止
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="招待キャンペーン停止",
-        description="招待キャンペーンを停止します"
-    )
+    @app_commands.command(name="招待キャンペーン停止", description="招待キャンペーンを停止します")
     async def invite_campaign_stop(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
         data = load_invite_campaign_data()
-        gid = str(interaction.guild.id)
         options = []
         for cid, c in data.items():
             if c.get("guild_id") == interaction.guild.id and c.get("active"):
-                options.append(discord.SelectOption(
-                    label=c.get("title", cid)[:100],
-                    value=cid
-                ))
+                options.append(discord.SelectOption(label=c.get("title", cid)[:100], value=cid))
 
         if not options:
             return await interaction.response.send_message("停止できるキャンペーンがありません。", ephemeral=True)
@@ -5534,28 +4960,12 @@ class SlashCog(commands.Cog):
         view = InviteCampaignStopView(options)
         await interaction.response.send_message("停止するキャンペーンを選択してください。", view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /定期メッセージ送信
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="定期メッセージ送信",
-        description="指定したチャンネルに定期的にメッセージを送信します"
-    )
-    @app_commands.describe(
-        channel="送信先チャンネル",
-        text="送信するテキスト",
-        interval="送信間隔（例: 1m, 1h, 1d, 1w）",
-        image_url="画像URL（任意）"
-    )
-    async def periodic_message(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        text: str,
-        interval: str,
-        image_url: str = None
-    ):
+    @app_commands.command(name="定期メッセージ送信", description="指定したチャンネルに定期的にメッセージを送信します")
+    @app_commands.describe(channel="送信先チャンネル", text="送信するテキスト",
+                           interval="送信間隔（例: 1m, 1h, 1d, 1w）", image_url="画像URL（任意）")
+    async def periodic_message(self, interaction: discord.Interaction,
+                               channel: discord.TextChannel, text: str,
+                               interval: str, image_url: str = None):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
@@ -5588,14 +4998,7 @@ class SlashCog(commands.Cog):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
-    # /定期メッセージ送信解除
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="定期メッセージ送信解除",
-        description="定期メッセージを解除します"
-    )
+    @app_commands.command(name="定期メッセージ送信解除", description="定期メッセージを解除します")
     async def periodic_message_remove(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5610,10 +5013,7 @@ class SlashCog(commands.Cog):
             if info.get("active"):
                 channel = interaction.guild.get_channel(info["channel_id"])
                 ch_name = channel.name if channel else str(info["channel_id"])
-                options.append(discord.SelectOption(
-                    label=f"#{ch_name}: {info['text'][:50]}",
-                    value=pid
-                ))
+                options.append(discord.SelectOption(label=f"#{ch_name}: {info['text'][:50]}", value=pid))
 
         if not options:
             return await interaction.response.send_message("解除できる定期メッセージがありません。", ephemeral=True)
@@ -5621,14 +5021,7 @@ class SlashCog(commands.Cog):
         view = PeriodicMessageRemoveView(options)
         await interaction.response.send_message("解除する定期メッセージを選択してください。", view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /定期メッセージ送信確認
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="定期メッセージ送信確認",
-        description="設定済みの定期メッセージを確認します"
-    )
+    @app_commands.command(name="定期メッセージ送信確認", description="設定済みの定期メッセージを確認します")
     async def periodic_message_check(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5641,10 +5034,7 @@ class SlashCog(commands.Cog):
         if not active_items:
             return await interaction.response.send_message("設定済みの定期メッセージはありません。", ephemeral=True)
 
-        embed = discord.Embed(
-            title="定期メッセージ一覧",
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title="定期メッセージ一覧", color=discord.Color.blurple())
 
         for pid, info in active_items.items():
             channel = interaction.guild.get_channel(info["channel_id"])
@@ -5661,34 +5051,16 @@ class SlashCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /仲介依頼パネル作成
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介依頼パネル作成",
-        description="仲介依頼パネルを作成します"
-    )
-    @app_commands.describe(
-        title="パネルのタイトル",
-        description="パネルの説明"
-    )
-    async def mediation_request_panel(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        description: str
-    ):
+    @app_commands.command(name="仲介依頼パネル作成", description="仲介依頼パネルを作成します")
+    @app_commands.describe(title="パネルのタイトル", description="パネルの説明")
+    async def mediation_request_panel(self, interaction: discord.Interaction,
+                                      title: str, description: str):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
         panel_id = uuid.uuid4().hex[:10]
 
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
         embed.add_field(
             name="使い方",
             value="下の 仲介依頼 ボタンから、今すぐ依頼または時間指定予約を選べます。",
@@ -5701,14 +5073,7 @@ class SlashCog(commands.Cog):
         await interaction.response.send_message("仲介依頼パネルを作成しました。", ephemeral=True)
         await interaction.channel.send(embed=embed, view=view)
 
-    # -----------------------------------------------------
-    # /仲介設定
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介設定",
-        description="仲介ロール・仲介メンバーを設定します"
-    )
+    @app_commands.command(name="仲介設定", description="仲介ロール・仲介メンバーを設定します")
     async def mediation_settings(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5723,14 +5088,7 @@ class SlashCog(commands.Cog):
         view = MediationSettingsView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /仲介実績チャンネル
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介実績チャンネル",
-        description="仲介実績の送信チャンネル・カウント設定を行います"
-    )
+    @app_commands.command(name="仲介実績チャンネル", description="仲介実績の送信チャンネル・カウント設定を行います")
     async def mediation_channel(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5745,14 +5103,7 @@ class SlashCog(commands.Cog):
         view = MediationChannelSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /仲介チケット管理
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介チケット管理",
-        description="仲介依頼のチケット作成カテゴリーを設定します"
-    )
+    @app_commands.command(name="仲介チケット管理", description="仲介依頼のチケット作成カテゴリーを設定します")
     async def mediation_ticket_manage(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -5767,24 +5118,10 @@ class SlashCog(commands.Cog):
         view = MediationChannelSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # -----------------------------------------------------
-    # /仲介チケット詳細
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介チケット詳細",
-        description="仲介チケットの埋め込みタイトル・説明を設定します"
-    )
-    @app_commands.describe(
-        title="埋め込みタイトル",
-        description="埋め込み説明"
-    )
-    async def mediation_ticket_detail(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        description: str
-    ):
+    @app_commands.command(name="仲介チケット詳細", description="仲介チケットの埋め込みタイトル・説明を設定します")
+    @app_commands.describe(title="埋め込みタイトル", description="埋め込み説明")
+    async def mediation_ticket_detail(self, interaction: discord.Interaction,
+                                      title: str, description: str):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
@@ -5797,26 +5134,12 @@ class SlashCog(commands.Cog):
         save_mediation_data(data)
 
         await interaction.response.send_message(
-            "仲介チケットの埋め込みタイトル・説明を保存しました。",
-            ephemeral=True
+            "仲介チケットの埋め込みタイトル・説明を保存しました。", ephemeral=True
         )
 
-    # -----------------------------------------------------
-    # /仲介人追加
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介人追加",
-        description="現在の仲介チケットに仲介人を追加します"
-    )
-    @app_commands.describe(
-        user="追加する仲介人"
-    )
-    async def mediation_add_mediator(
-        self,
-        interaction: discord.Interaction,
-        user: discord.Member
-    ):
+    @app_commands.command(name="仲介人追加", description="現在の仲介チケットに仲介人を追加します")
+    @app_commands.describe(user="追加する仲介人")
+    async def mediation_add_mediator(self, interaction: discord.Interaction, user: discord.Member):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
@@ -5833,14 +5156,8 @@ class SlashCog(commands.Cog):
         if not ticket:
             return await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
 
-        # チャンネル権限追加
         try:
-            await channel.set_permissions(
-                user,
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True
-            )
+            await channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True)
         except discord.HTTPException:
             return await interaction.response.send_message("権限の付与に失敗しました。", ephemeral=True)
 
@@ -5848,27 +5165,11 @@ class SlashCog(commands.Cog):
         if user.id not in ticket["extra_mediators"]:
             ticket["extra_mediators"].append(user.id)
 
-        await interaction.response.send_message(
-            f"{user.mention} を仲介人として追加しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"{user.mention} を仲介人として追加しました。", ephemeral=True)
 
-    # -----------------------------------------------------
-    # /仲介人削除
-    # -----------------------------------------------------
-
-    @app_commands.command(
-        name="仲介人削除",
-        description="現在の仲介チケットから仲介人を削除します"
-    )
-    @app_commands.describe(
-        user="削除する仲介人"
-    )
-    async def mediation_remove_mediator(
-        self,
-        interaction: discord.Interaction,
-        user: discord.Member
-    ):
+    @app_commands.command(name="仲介人削除", description="現在の仲介チケットから仲介人を削除します")
+    @app_commands.describe(user="削除する仲介人")
+    async def mediation_remove_mediator(self, interaction: discord.Interaction, user: discord.Member):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
 
@@ -5885,7 +5186,6 @@ class SlashCog(commands.Cog):
         if not ticket:
             return await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
 
-        # チャンネル権限削除
         try:
             await channel.set_permissions(user, overwrite=None)
         except discord.HTTPException:
@@ -5895,10 +5195,7 @@ class SlashCog(commands.Cog):
         if user.id in extras:
             extras.remove(user.id)
 
-        await interaction.response.send_message(
-            f"{user.mention} を仲介人から削除しました。",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"{user.mention} を仲介人から削除しました。", ephemeral=True)
 
     # -----------------------------------------------------
     # リアクションイベント
@@ -6047,9 +5344,7 @@ class SlashCog(commands.Cog):
         if settings.get("link_enabled"):
             if re.search(r"https?://\S+", message.content):
                 await self._handle_antiraid_detection(
-                    message,
-                    "リンク検知しました。",
-                    "リンクの送信は禁止されています。"
+                    message, "リンク検知しました。", "リンクの送信は禁止されています。"
                 )
                 return
 
@@ -6063,9 +5358,7 @@ class SlashCog(commands.Cog):
                     now = message.created_at.timestamp()
                     if now - recent[0].created_at.timestamp() < 3:
                         await self._handle_antiraid_detection(
-                            message,
-                            "連投スパムを検知しました。",
-                            "連投は禁止されています。"
+                            message, "連投スパムを検知しました。", "連投は禁止されています。"
                         )
             except discord.HTTPException:
                 pass
@@ -6095,11 +5388,7 @@ class SlashCog(commands.Cog):
                 f"{title} / メッセージID: {message.id}"
             )
 
-            await message.channel.send(
-                content=message.author.mention,
-                embed=embed,
-                view=view
-            )
+            await message.channel.send(content=message.author.mention, embed=embed, view=view)
         except Exception as e:
             print(f"_handle_antiraid_detection error: {e}")
 
@@ -6221,10 +5510,6 @@ class SlashCog(commands.Cog):
             await channel.send(embed=embed)
         except Exception as e:
             print(f"on_member_remove error: {e}")
-
-    # -----------------------------------------------------
-    # 招待キャッシュ初期化
-    # -----------------------------------------------------
 
     @commands.Cog.listener()
     async def on_ready(self):
