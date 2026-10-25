@@ -2783,7 +2783,6 @@ class MediationLevelRoleSelect(discord.ui.RoleSelect):
             await interaction.response.send_message("ロールを1つ以上選択してください。", ephemeral=True)
             return
 
-        # 1レベルに複数ロールをまとめて保存
         levels = get_guild_mediation_levels(interaction.guild.id)
         levels.append({
             "name": self.settings_view.level_name,
@@ -2883,18 +2882,6 @@ class MediationLevelSettingView(discord.ui.View):
 # MEDIATION
 # =========================================================
 
-def build_mediation_settings_embed(guild, data):
-    role_ids = data.get("role_ids", [])
-    member_ids = data.get("member_ids", [])
-    roles_text = "\n".join(f"<@&{rid}>" for rid in role_ids) if role_ids else "設定なし"
-    members_text = "\n".join(f"<@{uid}>" for uid in member_ids) if member_ids else "設定なし"
-    return discord.Embed(
-        title="仲介設定",
-        description=f"サーバー名: {guild.name} ({guild.id})\n仲介ロール・仲介メンバーを設定できます。",
-        color=discord.Color.blurple()
-    ).add_field(name="仲介ロール", value=roles_text, inline=False).add_field(name="仲介メンバー", value=members_text, inline=False)
-
-
 def build_mediation_channel_embed(guild, data):
     request_category_id = data.get("request_category_id")
     counter_id = data.get("counter_channel_id")
@@ -2911,51 +2898,6 @@ def build_mediation_channel_embed(guild, data):
     embed.add_field(name="実績カウントチャンネル", value=counter_text, inline=False)
     embed.add_field(name="カウント", value=f"する（現在: -{counter_count}）" if counter_enabled else "しない", inline=False)
     return embed
-
-
-class MediationRoleSelect(discord.ui.RoleSelect):
-    def __init__(self, cog):
-        super().__init__(placeholder="🔍 仲介ロールを選択（検索・複数選択可能）", min_values=0, max_values=25, custom_id=f"mediation_role_select_{uuid.uuid4().hex[:8]}")
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        data = load_mediation_data()
-        gid = str(interaction.guild.id)
-        if gid not in data:
-            data[gid] = {}
-        data[gid]["role_ids"] = [r.id for r in self.values]
-        save_mediation_data(data)
-        embed = build_mediation_settings_embed(interaction.guild, data[gid])
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-
-class MediationMemberSelect(discord.ui.UserSelect):
-    def __init__(self, cog):
-        super().__init__(placeholder="🔍 仲介メンバーを選択（検索・複数選択可能）", min_values=0, max_values=25, custom_id=f"mediation_member_select_{uuid.uuid4().hex[:8]}")
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        data = load_mediation_data()
-        gid = str(interaction.guild.id)
-        if gid not in data:
-            data[gid] = {}
-        data[gid]["member_ids"] = [u.id for u in self.values]
-        save_mediation_data(data)
-        embed = build_mediation_settings_embed(interaction.guild, data[gid])
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-
-class MediationSettingsView(discord.ui.View):
-    """`/仲介設定` コマンドは削除したが、クラス自体は他の場所から参照されるため残す"""
-    def __init__(self, cog):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.add_item(MediationRoleSelect(cog))
-        self.add_item(MediationMemberSelect(cog))
 
 
 class MediationRequestCategorySelect(discord.ui.ChannelSelect):
@@ -3188,18 +3130,42 @@ class MediationTradeDetailModal(discord.ui.Modal):
         self.trade_type = trade_type
         self.reserve = reserve
         self.level = level
-        self.content_input = discord.ui.TextInput(label="取引内容", placeholder="取引の内容を入力してください", style=discord.TextStyle.paragraph, required=True, max_length=500)
-        self.my_item_input = discord.ui.TextInput(label="自分の出す内容", required=True, max_length=300)
-        self.partner_item_input = discord.ui.TextInput(label="相手を出す内容", required=True, max_length=300)
+        self.content_input = discord.ui.TextInput(
+            label="内容",
+            placeholder="取引の内容を入力してください",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=500,
+        )
+        self.my_item_input = discord.ui.TextInput(
+            label="自分の出す内容",
+            placeholder="自分が提供するもの",
+            required=True,
+            max_length=300,
+        )
+        self.partner_item_input = discord.ui.TextInput(
+            label="相手を出す内容",
+            placeholder="相手が提供するもの",
+            required=True,
+            max_length=300,
+        )
+        self.fee_input = discord.ui.TextInput(
+            label="仲介料",
+            placeholder="例: 1000円 / 10% など",
+            required=False,
+            max_length=100,
+        )
         self.add_item(self.content_input)
         self.add_item(self.my_item_input)
         self.add_item(self.partner_item_input)
+        self.add_item(self.fee_input)
 
     async def on_submit(self, interaction):
         view = MediationMediatorChoiceView(
             self.cog, self.panel_id, self.partner_id, self.trade_type,
             self.content_input.value, self.my_item_input.value, self.partner_item_input.value,
-            self.reserve, self.level
+            self.fee_input.value.strip(),
+            self.reserve, self.level,
         )
         if self.level:
             await interaction.response.send_message(
@@ -3213,7 +3179,7 @@ class MediationTradeDetailModal(discord.ui.Modal):
 
 
 class MediationMediatorChoiceView(discord.ui.View):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, level=None):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, fee, reserve, level=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
@@ -3222,6 +3188,7 @@ class MediationMediatorChoiceView(discord.ui.View):
         self.content = content
         self.my_item = my_item
         self.partner_item = partner_item
+        self.fee = fee
         self.reserve = reserve
         self.level = level
 
@@ -3281,7 +3248,8 @@ class MediationMediatorChoiceView(discord.ui.View):
             return
         view = MediationMediatorSelectView(
             self.cog, self.panel_id, self.partner_id, self.trade_type,
-            self.content, self.my_item, self.partner_item, self.reserve, options[:25], self.level
+            self.content, self.my_item, self.partner_item, self.fee,
+            self.reserve, options[:25], self.level,
         )
         await interaction.response.edit_message(content="仲介人を選択してください。", view=view)
 
@@ -3302,19 +3270,20 @@ class MediationMediatorChoiceView(discord.ui.View):
         if self.reserve:
             modal = MediationReserveTimeModal(
                 self.cog, self.panel_id, self.partner_id, self.trade_type,
-                self.content, self.my_item, self.partner_item, mediator_id, self.level
+                self.content, self.my_item, self.partner_item, self.fee,
+                mediator_id, self.level,
             )
             await interaction.response.send_modal(modal); return
         await self.cog.create_mediation_ticket(
             interaction.guild, interaction.user, self.partner_id, mediator_id,
-            self.trade_type, self.content, self.my_item, self.partner_item, category,
-            level=self.level
+            self.trade_type, self.content, self.my_item, self.partner_item,
+            category, fee=self.fee, level=self.level,
         )
         await interaction.response.send_message("仲介依頼チケットを作成しました。", ephemeral=True)
 
 
 class MediationMediatorSelect(discord.ui.Select):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level=None):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, fee, reserve, options, level=None):
         super().__init__(placeholder="🔍 仲介人を選択（検索可能）", options=options, custom_id=f"mediation_mediator_select_{uuid.uuid4().hex[:8]}")
         self.cog = cog
         self.panel_id = panel_id
@@ -3323,6 +3292,7 @@ class MediationMediatorSelect(discord.ui.Select):
         self.content = content
         self.my_item = my_item
         self.partner_item = partner_item
+        self.fee = fee
         self.reserve = reserve
         self.level = level
 
@@ -3330,13 +3300,14 @@ class MediationMediatorSelect(discord.ui.Select):
         mediator_id = int(self.values[0])
         view = MediationMediatorConfirmView(
             self.cog, self.panel_id, self.partner_id, self.trade_type,
-            self.content, self.my_item, self.partner_item, self.reserve, mediator_id, self.level
+            self.content, self.my_item, self.partner_item, self.fee,
+            self.reserve, mediator_id, self.level,
         )
         await interaction.response.edit_message(content=f"仲介人: <@{mediator_id}>\nこの内容でチケットを作成しますか？", view=view)
 
 
 class MediationMediatorSelectView(discord.ui.View):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level=None):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, fee, reserve, options, level=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
@@ -3345,13 +3316,17 @@ class MediationMediatorSelectView(discord.ui.View):
         self.content = content
         self.my_item = my_item
         self.partner_item = partner_item
+        self.fee = fee
         self.reserve = reserve
         self.level = level
-        self.add_item(MediationMediatorSelect(cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level))
+        self.add_item(MediationMediatorSelect(
+            cog, panel_id, partner_id, trade_type,
+            content, my_item, partner_item, fee, reserve, options, level,
+        ))
 
 
 class MediationMediatorConfirmView(discord.ui.View):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, mediator_id, level=None):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, fee, reserve, mediator_id, level=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
@@ -3360,6 +3335,7 @@ class MediationMediatorConfirmView(discord.ui.View):
         self.content = content
         self.my_item = my_item
         self.partner_item = partner_item
+        self.fee = fee
         self.reserve = reserve
         self.mediator_id = mediator_id
         self.level = level
@@ -3384,19 +3360,20 @@ class MediationMediatorConfirmView(discord.ui.View):
         if self.reserve:
             modal = MediationReserveTimeModal(
                 self.cog, self.panel_id, self.partner_id, self.trade_type,
-                self.content, self.my_item, self.partner_item, self.mediator_id, self.level
+                self.content, self.my_item, self.partner_item, self.fee,
+                self.mediator_id, self.level,
             )
             await interaction.response.send_modal(modal); return
         await self.cog.create_mediation_ticket(
             interaction.guild, interaction.user, self.partner_id, self.mediator_id,
-            self.trade_type, self.content, self.my_item, self.partner_item, category,
-            level=self.level
+            self.trade_type, self.content, self.my_item, self.partner_item,
+            category, fee=self.fee, level=self.level,
         )
         await interaction.response.send_message("仲介依頼チケットを作成しました。", ephemeral=True)
 
 
 class MediationReserveTimeModal(discord.ui.Modal):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, mediator_id, level=None):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, fee, mediator_id, level=None):
         super().__init__(title="予約時間の指定")
         self.cog = cog
         self.panel_id = panel_id
@@ -3405,6 +3382,7 @@ class MediationReserveTimeModal(discord.ui.Modal):
         self.content = content
         self.my_item = my_item
         self.partner_item = partner_item
+        self.fee = fee
         self.mediator_id = mediator_id
         self.level = level
         self.time_input = discord.ui.TextInput(label="予約時間（例: 2026-10-15 21:00）", placeholder="YYYY-MM-DD HH:MM (JST)", required=True, max_length=30)
@@ -3429,6 +3407,7 @@ class MediationReserveTimeModal(discord.ui.Modal):
             "requester_id": interaction.user.id, "partner_id": self.partner_id,
             "mediator_id": self.mediator_id, "trade_type": self.trade_type,
             "content": self.content, "my_item": self.my_item, "partner_item": self.partner_item,
+            "fee": self.fee,
             "timestamp": timestamp, "channel_id": data[gid].get("request_category_id"),
             "level": self.level,
         })
@@ -3439,7 +3418,7 @@ class MediationReserveTimeModal(discord.ui.Modal):
         )
 
 
-def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, trade_type, content, my_item, partner_item, embed_title, embed_description, status="進行中", level=None):
+def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, trade_type, content, my_item, partner_item, fee="", embed_title=None, embed_description=None, status="進行中", level=None):
     embed = discord.Embed(
         title=embed_title or "🤝 仲介依頼",
         description=embed_description or "仲介依頼が作成されました。",
@@ -3450,7 +3429,7 @@ def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, t
     if mediator_id:
         embed.add_field(name="仲介者", value=f"<@{mediator_id}>", inline=True)
     else:
-        embed.add_field(name="仲介者", value="未指定（仲介ロールをメンション）", inline=True)
+        embed.add_field(name="仲介者", value="未指定（スタッフロールをメンション）", inline=True)
     embed.add_field(name="取引内容", value=trade_type, inline=True)
     if level:
         role_ids = level_role_ids(level)
@@ -3464,9 +3443,10 @@ def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, t
             value=f"{display_emoji(guild, level.get('emoji', '📝'))} **{level.get('name', '無題')}**\n{level.get('description') or '説明なし'}\nスタッフロール: {role_text}",
             inline=False
         )
-    embed.add_field(name="内容", value=content or "なし", inline=False)
-    embed.add_field(name="自分の出す内容", value=my_item or "なし", inline=False)
-    embed.add_field(name="相手を出す内容", value=partner_item or "なし", inline=False)
+    embed.add_field(name="📝 内容", value=f"```{content or 'なし'}```", inline=False)
+    embed.add_field(name="📤 自分の出す内容", value=f"```{my_item or 'なし'}```", inline=False)
+    embed.add_field(name="📥 相手を出す内容", value=f"```{partner_item or 'なし'}```", inline=False)
+    embed.add_field(name="💰 仲介料", value=f"```{fee or 'なし'}```", inline=False)
     embed.add_field(name="ステータス", value=status, inline=False)
     return embed
 
@@ -3828,19 +3808,42 @@ class SlashCog(commands.Cog):
         self.periodic_tasks[key] = task
 
     def get_mediation_staff_ids(self, guild, ticket):
-        if ticket.get("mediator_id"):
-            return {ticket["mediator_id"]}
-        data = load_mediation_data()
-        g = data.get(str(guild.id), {})
-        ids = set(g.get("member_ids", []))
-        for rid in g.get("role_ids", []):
-            role = guild.get_role(rid)
-            if role:
-                for m in role.members:
-                    ids.add(m.id)
+        """チケットで許可されるスタッフ ID を返す。
+        - 明示的に指定された mediator
+        - 追加された extra_mediators
+        - チケット作成時に選ばれたレベルのロール保持者
+        - 上記いずれも無い場合は mediation_data の role_ids / member_ids
+        """
+        ids = set()
+
+        level = ticket.get("level")
+        if isinstance(level, dict):
+            for rid in level_role_ids(level):
+                role = guild.get_role(rid)
+                if role:
+                    for m in role.members:
+                        ids.add(m.id)
+
+        mid = ticket.get("mediator_id")
+        if mid:
+            ids.add(mid)
+
+        for uid in ticket.get("extra_mediators", []):
+            ids.add(uid)
+
+        if not ids:
+            data = load_mediation_data()
+            g = data.get(str(guild.id), {})
+            for uid in g.get("member_ids", []):
+                ids.add(uid)
+            for rid in g.get("role_ids", []):
+                role = guild.get_role(rid)
+                if role:
+                    for m in role.members:
+                        ids.add(m.id)
         return ids
 
-    async def create_mediation_ticket(self, guild, requester, partner_id, mediator_id, trade_type, content, my_item, partner_item, category, level=None):
+    async def create_mediation_ticket(self, guild, requester, partner_id, mediator_id, trade_type, content, my_item, partner_item, category, fee="", level=None):
         ticket_id = uuid.uuid4().hex[:10]
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -3879,9 +3882,9 @@ class SlashCog(commands.Cog):
         g = data.get(str(guild.id), {})
         embed = build_mediation_ticket_embed(
             guild, requester.id, partner_id, mediator_id,
-            trade_type, content, my_item, partner_item,
+            trade_type, content, my_item, partner_item, fee,
             g.get("ticket_embed_title"), g.get("ticket_embed_description"),
-            level=level
+            level=level,
         )
         mention_text = f"{requester.mention} <@{partner_id}>"
         if mediator_id:
@@ -3901,6 +3904,7 @@ class SlashCog(commands.Cog):
             "requester_id": requester.id, "partner_id": partner_id,
             "mediator_id": mediator_id, "trade_type": trade_type,
             "content": content, "my_item": my_item, "partner_item": partner_item,
+            "fee": fee,
             "status": "進行中", "resumed": False, "supported_by": None,
             "level": level,
         }
@@ -3936,7 +3940,8 @@ class SlashCog(commands.Cog):
             await self.create_mediation_ticket(
                 guild, requester, target["partner_id"], target.get("mediator_id"),
                 target["trade_type"], target["content"], target["my_item"], target["partner_item"], category,
-                level=target.get("level")
+                fee=target.get("fee", ""),
+                level=target.get("level"),
             )
             data = load_mediation_data()
             for g, gdata in data.items():
@@ -3975,8 +3980,9 @@ class SlashCog(commands.Cog):
                     f"仲介者: {mediator}\n"
                     f"取引内容: {r.get('trade_type', '不明')}\n"
                     f"仲介レベル: {level_text}\n"
-                    f"予定時刻: <t:{ts}:F> (<t:{ts}:R>)\n"
-                    f"内容: {r.get('content', '')[:100]}"
+                    f"内容: {r.get('content', '')[:100]}\n"
+                    f"仲介料: {r.get('fee') or 'なし'}\n"
+                    f"予定時刻: <t:{ts}:F> (<t:{ts}:R>)"
                 ),
                 inline=False
             )
@@ -4687,8 +4693,8 @@ class SlashCog(commands.Cog):
         view = MediationChannelSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="仲介人追加", description="現在の仲介チケットに仲介人を追加します")
-    @app_commands.describe(user="追加する仲介人")
+    @app_commands.command(name="人を追加", description="現在の仲介チケットにスタッフを追加します")
+    @app_commands.describe(user="追加するスタッフ")
     async def mediation_add_mediator(self, interaction: discord.Interaction, user: discord.Member):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
@@ -4711,8 +4717,8 @@ class SlashCog(commands.Cog):
             ticket["extra_mediators"].append(user.id)
         await interaction.response.send_message(f"{user.mention} を仲介人として追加しました。", ephemeral=True)
 
-    @app_commands.command(name="仲介人削除", description="現在の仲介チケットから仲介人を削除します")
-    @app_commands.describe(user="削除する仲介人")
+    @app_commands.command(name="人を削除", description="現在の仲介チケットからスタッフを削除します")
+    @app_commands.describe(user="削除するスタッフ")
     async def mediation_remove_mediator(self, interaction: discord.Interaction, user: discord.Member):
         if not interaction.guild:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
