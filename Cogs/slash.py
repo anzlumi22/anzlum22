@@ -79,28 +79,20 @@ def parse_color(value: str):
 
 
 def resolve_reaction_emoji(guild: discord.Guild, raw: str):
-    """
-    raw が ':name:' 形式ならギルド内のカスタム絵文字に解決して返す。
-    それ以外（Unicode絵文字など）はそのまま返す。
-    解決できなければ None を返す。
-    """
     if raw is None:
         return None
     raw = raw.strip()
     if not raw:
         return None
-    # :name: 形式（コロンで囲まれた名前）
     m = re.fullmatch(r":([A-Za-z0-9_~]+):", raw)
     if m:
         name = m.group(1)
         emoji = discord.utils.get(guild.emojis, name=name)
-        return emoji  # 見つからなければ None
-    # <:name:id> / <a:name:id> / Unicode はそのまま
+        return emoji
     return raw
 
 
 def display_emoji(guild: discord.Guild, raw: str) -> str:
-    """表示用：:name: 形式なら実体の絵文字文字列に変換（見つからなければそのまま）"""
     if not raw:
         return ""
     m = re.fullmatch(r":([A-Za-z0-9_~]+):", raw.strip())
@@ -1425,14 +1417,15 @@ class TicketControlView(discord.ui.View):
 
 class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
     def __init__(self, settings_view: "TicketSettingsView", row: int = 0):
-        self.settings_view = settings_view
+        # custom_id をビューインスタンスごとにユニーク化して競合を回避
         super().__init__(
             placeholder="🔎 チケット作成するカテゴリーを選択（検索可）",
             channel_types=[discord.ChannelType.category],
             min_values=1, max_values=1,
-            custom_id="ticket_settings_category",
+            custom_id=f"ticket_settings_category_{uuid.uuid4().hex[:8]}",
             row=row
         )
+        self.settings_view = settings_view
 
     async def callback(self, interaction: discord.Interaction):
         if self.settings_view is None:
@@ -1440,7 +1433,19 @@ class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
                 "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。", ephemeral=True
             )
             return
-        self.settings_view.settings["category_id"] = self.values[0].id
+        category_id = self.values[0].id
+        # 実体を取得して検証（権限やキャッシュ問題の回避）
+        category = interaction.guild.get_channel(category_id) if interaction.guild else None
+        if category is None:
+            try:
+                category = await interaction.guild.fetch_channel(category_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                category = None
+        if category is None:
+            await interaction.response.send_message("カテゴリーが見つかりません。", ephemeral=True)
+            return
+
+        self.settings_view.settings["category_id"] = category.id
         self.settings_view.save_draft()
         embed = build_ticket_settings_embed(self.settings_view.settings)
         await interaction.response.edit_message(embed=embed, view=self.settings_view)
@@ -1448,14 +1453,14 @@ class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
 
 class TicketSettingsArchiveSelect(discord.ui.ChannelSelect):
     def __init__(self, settings_view: "TicketSettingsView", row: int = 1):
-        self.settings_view = settings_view
         super().__init__(
             placeholder="🔎 チケット削除時のログ送信チャンネルを選択（検索可）",
             channel_types=[discord.ChannelType.text],
             min_values=1, max_values=1,
-            custom_id="ticket_settings_archive",
+            custom_id=f"ticket_settings_archive_{uuid.uuid4().hex[:8]}",
             row=row
         )
+        self.settings_view = settings_view
 
     async def callback(self, interaction: discord.Interaction):
         if self.settings_view is None:
@@ -1463,7 +1468,18 @@ class TicketSettingsArchiveSelect(discord.ui.ChannelSelect):
                 "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。", ephemeral=True
             )
             return
-        self.settings_view.settings["archive_channel_id"] = self.values[0].id
+        channel_id = self.values[0].id
+        channel = interaction.guild.get_channel(channel_id) if interaction.guild else None
+        if channel is None:
+            try:
+                channel = await interaction.guild.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                channel = None
+        if channel is None:
+            await interaction.response.send_message("チャンネルが見つかりません。", ephemeral=True)
+            return
+
+        self.settings_view.settings["archive_channel_id"] = channel.id
         self.settings_view.save_draft()
         embed = build_ticket_settings_embed(self.settings_view.settings)
         await interaction.response.edit_message(embed=embed, view=self.settings_view)
@@ -1498,7 +1514,7 @@ class TicketSettingsRoleSelect(discord.ui.Select):
         super().__init__(
             placeholder="スタッフロールを選択",
             options=options,
-            custom_id="ticket_settings_role"
+            custom_id=f"ticket_settings_role_{uuid.uuid4().hex[:8]}"
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -1581,7 +1597,7 @@ class TicketSettingsRequirementModal(discord.ui.Modal):
 class TicketSettingsRequirementsRemoveSelect(discord.ui.Select):
     def __init__(self, parent: "TicketSettingsView", options):
         self.parent = parent
-        super().__init__(placeholder="削除する要件を選択", options=options, custom_id="ticket_settings_req_remove")
+        super().__init__(placeholder="削除する要件を選択", options=options, custom_id=f"ticket_settings_req_remove_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         try:
@@ -2162,7 +2178,7 @@ class MemberLogChannelSelect(discord.ui.ChannelSelect):
             placeholder=placeholder,
             channel_types=[discord.ChannelType.text],
             min_values=1, max_values=1,
-            custom_id=f"member_log_select_{log_type}"
+            custom_id=f"member_log_select_{log_type}_{uuid.uuid4().hex[:8]}"
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -2187,7 +2203,7 @@ class MemberLogRemoveButton(discord.ui.Button):
         self.cog = cog
         self.log_type = log_type
         label = "入室通知 解除" if log_type == "join" else "退室通知 解除"
-        super().__init__(label=label, style=discord.ButtonStyle.danger, custom_id=f"member_log_remove_{log_type}")
+        super().__init__(label=label, style=discord.ButtonStyle.danger, custom_id=f"member_log_remove_{log_type}_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -2235,7 +2251,7 @@ def build_antiraid_embed(guild, data):
 
 class AntiraidIgnoreUserSelect(discord.ui.UserSelect):
     def __init__(self, cog):
-        super().__init__(placeholder="🔍 荒らし対策を検知しないメンバー（検索できます）", min_values=0, max_values=25, custom_id="antiraid_ignore_users")
+        super().__init__(placeholder="🔍 荒らし対策を検知しないメンバー（検索できます）", min_values=0, max_values=25, custom_id=f"antiraid_ignore_users_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2253,7 +2269,7 @@ class AntiraidIgnoreUserSelect(discord.ui.UserSelect):
 
 class AntiraidIgnoreRoleSelect(discord.ui.RoleSelect):
     def __init__(self, cog):
-        super().__init__(placeholder="🔍 荒らし対策を検知しないロール（検索できます）", min_values=0, max_values=25, custom_id="antiraid_ignore_roles")
+        super().__init__(placeholder="🔍 荒らし対策を検知しないロール（検索できます）", min_values=0, max_values=25, custom_id=f"antiraid_ignore_roles_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2274,7 +2290,7 @@ class AntiraidToggleButton(discord.ui.Button):
         self.cog = cog
         self.toggle_type = toggle_type
         label = "連投スパム 切替" if toggle_type == "spam" else "リンク検知 切替"
-        super().__init__(label=label, style=discord.ButtonStyle.primary, custom_id=f"antiraid_toggle_{toggle_type}")
+        super().__init__(label=label, style=discord.ButtonStyle.primary, custom_id=f"antiraid_toggle_{toggle_type}_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -2377,7 +2393,7 @@ class TimeoutDurationView(discord.ui.View):
 
 class FixedMessageRemoveSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(placeholder="解除する固定メッセージを選択", options=options)
+        super().__init__(placeholder="解除する固定メッセージを選択", options=options, custom_id=f"fixed_remove_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         data = load_fixed_message_data()
@@ -2437,7 +2453,7 @@ class AutoReactionChannelSelect(discord.ui.ChannelSelect):
             placeholder="🔍 リアクションチャンネル（検索できます）" if index == 0 else f"🔍 リアクションチャンネル{index + 1}",
             channel_types=[discord.ChannelType.text],
             min_values=1, max_values=1,
-            custom_id=f"auto_reaction_channel_{index}"
+            custom_id=f"auto_reaction_channel_{index}_{uuid.uuid4().hex[:8]}"
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -2466,7 +2482,6 @@ class AutoReactionEmojiModal(discord.ui.Modal):
             await interaction.response.send_message("絵文字を1つ以上指定してください。", ephemeral=True); return
         if len(emojis) > 4:
             await interaction.response.send_message("絵文字は最大4つまでです。", ephemeral=True); return
-        # カスタム絵文字名の検証
         invalid = []
         normalized = []
         for e in emojis:
@@ -2505,7 +2520,7 @@ class AutoReactionSettingView(discord.ui.View):
 
 class AutoReactionRemoveSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(placeholder="解除するチャンネルの絵文字を選択（複数可）", min_values=1, max_values=25, options=options)
+        super().__init__(placeholder="解除するチャンネルの絵文字を選択（複数可）", min_values=1, max_values=25, options=options, custom_id=f"auto_reaction_remove_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         data = load_auto_reaction_data()
@@ -2617,7 +2632,7 @@ class InviteCampaignView(discord.ui.View):
 
 class InviteCampaignStopSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(placeholder="停止するキャンペーンを選択", options=options)
+        super().__init__(placeholder="停止するキャンペーンを選択", options=options, custom_id=f"invite_stop_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         data = load_invite_campaign_data()
@@ -2677,7 +2692,7 @@ class PeriodicMessageModal(discord.ui.Modal):
 
 class PeriodicMessageRemoveSelect(discord.ui.Select):
     def __init__(self, options):
-        super().__init__(placeholder="解除する定期メッセージを選択", options=options)
+        super().__init__(placeholder="解除する定期メッセージを選択", options=options, custom_id=f"periodic_remove_{uuid.uuid4().hex[:8]}")
 
     async def callback(self, interaction: discord.Interaction):
         data = load_periodic_message_data()
@@ -2698,7 +2713,7 @@ class PeriodicMessageRemoveView(discord.ui.View):
 
 
 # =========================================================
-# 仲介レベル設定（新規）
+# 仲介レベル設定
 # =========================================================
 
 class MediationLevelAddModal(discord.ui.Modal):
@@ -2720,33 +2735,48 @@ class MediationLevelAddModal(discord.ui.Modal):
             self.desc_input.value.strip() or "",
         )
         await interaction.response.send_message(
-            "スタッフロールを選択してください。",
+            "スタッフロールを選択してください（検索・複数選択可）。",
             view=view,
             ephemeral=True,
         )
 
 
 class MediationLevelRoleSelect(discord.ui.RoleSelect):
-    def __init__(self, parent: "MediationLevelRoleSelectView"):
+    def __init__(self, settings_view: "MediationLevelRoleSelectView"):
         super().__init__(
-            placeholder="🔍 スタッフロールを選択（検索できます）",
-            min_values=1, max_values=1,
-            custom_id="mediation_level_role_select",
+            placeholder="🔍 スタッフロールを選択（検索・複数選択可）",
+            min_values=1,
+            max_values=25,
+            custom_id=f"mediation_level_role_select_{uuid.uuid4().hex[:8]}",
         )
-        self.parent = parent
+        self.settings_view = settings_view
 
     async def callback(self, interaction: discord.Interaction):
-        role = self.values[0]
+        if self.settings_view is None:
+            await interaction.response.send_message(
+                "設定画面の有効期限が切れました。もう一度 `/仲介パネル詳細` を実行してください。",
+                ephemeral=True,
+            )
+            return
+        roles = list(self.values)
+        if not roles:
+            await interaction.response.send_message("ロールを1つ以上選択してください。", ephemeral=True)
+            return
+
         levels = get_guild_mediation_levels(interaction.guild.id)
-        levels.append({
-            "name": self.parent.level_name,
-            "emoji": self.parent.emoji,
-            "description": self.parent.description,
-            "role_id": role.id,
-        })
+        for role in roles:
+            levels.append({
+                "name": self.settings_view.level_name,
+                "emoji": self.settings_view.emoji,
+                "description": self.settings_view.description,
+                "role_id": role.id,
+            })
         set_guild_mediation_levels(interaction.guild.id, levels)
         embed = build_mediation_levels_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=MediationLevelSettingView(self.parent.cog))
+        await interaction.response.edit_message(
+            embed=embed,
+            view=MediationLevelSettingView(self.settings_view.cog),
+        )
 
 
 class MediationLevelRoleSelectView(discord.ui.View):
@@ -2767,7 +2797,7 @@ class MediationLevelRoleSelectView(discord.ui.View):
 
 class MediationLevelRemoveSelect(discord.ui.Select):
     def __init__(self, cog, options):
-        super().__init__(placeholder="削除する仲介レベルを選択", options=options, custom_id="mediation_level_remove_select")
+        super().__init__(placeholder="削除する仲介レベルを選択", options=options, custom_id=f"mediation_level_remove_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2862,7 +2892,7 @@ def build_mediation_channel_embed(guild, data):
 
 class MediationRoleSelect(discord.ui.RoleSelect):
     def __init__(self, cog):
-        super().__init__(placeholder="🔍 仲介ロールを選択（検索・複数選択可能）", min_values=0, max_values=25, custom_id="mediation_role_select")
+        super().__init__(placeholder="🔍 仲介ロールを選択（検索・複数選択可能）", min_values=0, max_values=25, custom_id=f"mediation_role_select_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2880,7 +2910,7 @@ class MediationRoleSelect(discord.ui.RoleSelect):
 
 class MediationMemberSelect(discord.ui.UserSelect):
     def __init__(self, cog):
-        super().__init__(placeholder="🔍 仲介メンバーを選択（検索・複数選択可能）", min_values=0, max_values=25, custom_id="mediation_member_select")
+        super().__init__(placeholder="🔍 仲介メンバーを選択（検索・複数選択可能）", min_values=0, max_values=25, custom_id=f"mediation_member_select_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2906,7 +2936,7 @@ class MediationSettingsView(discord.ui.View):
 
 class MediationRequestCategorySelect(discord.ui.ChannelSelect):
     def __init__(self, cog):
-        super().__init__(placeholder="🔎 仲介依頼のチケット作成カテゴリーを選択（検索できます）", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, custom_id="mediation_request_category_select")
+        super().__init__(placeholder="🔎 仲介依頼のチケット作成カテゴリーを選択（検索できます）", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, custom_id=f"mediation_request_category_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2924,7 +2954,7 @@ class MediationRequestCategorySelect(discord.ui.ChannelSelect):
 
 class MediationCounterChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, cog):
-        super().__init__(placeholder="🔎 実績カウントチャンネルを選択（検索できます）", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, custom_id="mediation_counter_channel_select")
+        super().__init__(placeholder="🔎 実績カウントチャンネルを選択（検索できます）", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, custom_id=f"mediation_counter_channel_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2942,7 +2972,7 @@ class MediationCounterChannelSelect(discord.ui.ChannelSelect):
 
 class MediationCounterToggleButton(discord.ui.Button):
     def __init__(self, cog):
-        super().__init__(label="カウントする/しない 切替", style=discord.ButtonStyle.primary, custom_id="mediation_counter_toggle")
+        super().__init__(label="カウントする/しない 切替", style=discord.ButtonStyle.primary, custom_id=f"mediation_counter_toggle_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -2998,7 +3028,7 @@ class MediationStartMethodSelect(discord.ui.Select):
             discord.SelectOption(label="⚡今すぐ始める", value="now", description="すぐに仲介依頼を開始します"),
             discord.SelectOption(label="⏰時間指定（予約）", value="reserve", description="日時を指定して予約します"),
         ]
-        super().__init__(placeholder="開始方法を選択してください", options=options, custom_id="mediation_start_method_select")
+        super().__init__(placeholder="開始方法を選択してください", options=options, custom_id=f"mediation_start_method_{uuid.uuid4().hex[:8]}")
         self.cog = cog
         self.panel_id = panel_id
 
@@ -3021,7 +3051,7 @@ class MediationStartMethodView(discord.ui.View):
 
 class MediationPartnerSelect(discord.ui.UserSelect):
     def __init__(self, cog, panel_id, reserve):
-        super().__init__(placeholder="🔍 取引相手を選択（検索可能）", min_values=1, max_values=1, custom_id="mediation_partner_select")
+        super().__init__(placeholder="🔍 取引相手を選択（検索可能）", min_values=1, max_values=1, custom_id=f"mediation_partner_{uuid.uuid4().hex[:8]}")
         self.cog = cog
         self.panel_id = panel_id
         self.reserve = reserve
@@ -3085,7 +3115,7 @@ class MediationLevelSelect(discord.ui.Select):
                 description=(lv.get("description") or "")[:100] or None,
                 emoji=lv.get("emoji", "📝")[:1] if lv.get("emoji") else None,
             ))
-        super().__init__(placeholder="仲介レベルを選択してください", options=options, custom_id="mediation_level_select")
+        super().__init__(placeholder="仲介レベルを選択してください", options=options, custom_id=f"mediation_level_select_{uuid.uuid4().hex[:8]}")
         self.cog = cog
         self.panel_id = panel_id
         self.partner_id = partner_id
@@ -3223,7 +3253,7 @@ class MediationMediatorChoiceView(discord.ui.View):
 
 class MediationMediatorSelect(discord.ui.Select):
     def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level=None):
-        super().__init__(placeholder="🔍 仲介人を選択（検索可能）", options=options, custom_id="mediation_mediator_select")
+        super().__init__(placeholder="🔍 仲介人を選択（検索可能）", options=options, custom_id=f"mediation_mediator_select_{uuid.uuid4().hex[:8]}")
         self.cog = cog
         self.panel_id = panel_id
         self.partner_id = partner_id
@@ -3554,7 +3584,7 @@ class MediationReviewStartView(discord.ui.View):
 
 class MediationReviewMediatorSelect(discord.ui.Select):
     def __init__(self, cog, ticket_id, options):
-        super().__init__(placeholder="仲介者を選択", options=options, custom_id="med_review_mediator_select")
+        super().__init__(placeholder="仲介者を選択", options=options, custom_id=f"med_review_mediator_{uuid.uuid4().hex[:8]}")
         self.cog = cog
         self.ticket_id = ticket_id
 
@@ -3623,7 +3653,7 @@ class MediationReviewModal(discord.ui.Modal):
 
 class MediationReservationCancelSelect(discord.ui.Select):
     def __init__(self, cog, options):
-        super().__init__(placeholder="キャンセルする予約を選択", options=options, custom_id="mediation_reservation_cancel_select")
+        super().__init__(placeholder="キャンセルする予約を選択", options=options, custom_id=f"mediation_reservation_cancel_{uuid.uuid4().hex[:8]}")
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
@@ -4244,7 +4274,7 @@ class SlashCog(commands.Cog):
         await interaction.response.send_message(f"{user.mention} を対応状況スタッフから削除しました。", ephemeral=True)
 
     # -----------------------------------------------------
-    # /チケット（即時パネル表示 / 下書き永続化）
+    # /チケット
     # -----------------------------------------------------
 
     @app_commands.command(name="チケット", description="チケット設定パネルを表示します（前回の設定を引き継ぎます）")
@@ -4538,7 +4568,7 @@ class SlashCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # -----------------------------------------------------
-    # /仲介パネル詳細（新規：仲介レベル設定）
+    # /仲介パネル詳細
     # -----------------------------------------------------
 
     @app_commands.command(name="仲介パネル詳細", description="仲介レベルの設定を行います")
@@ -4548,10 +4578,6 @@ class SlashCog(commands.Cog):
         embed = build_mediation_levels_embed(interaction.guild)
         view = MediationLevelSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    # -----------------------------------------------------
-    # /仲介チケット詳細
-    # -----------------------------------------------------
 
     @app_commands.command(name="仲介チケット詳細", description="仲介チケットの埋め込みタイトル・説明を設定します")
     @app_commands.describe(title="埋め込みタイトル", description="埋め込み説明")
