@@ -40,6 +40,7 @@ INVITE_CAMPAIGN_DATA_FILE = "invite_campaign_data.json"
 PERIODIC_MESSAGE_DATA_FILE = "periodic_message_data.json"
 MEDIATION_DATA_FILE = "mediation_data.json"
 TICKET_SETTINGS_DRAFT_FILE = "ticket_settings_draft.json"
+MEDIATION_LEVEL_DATA_FILE = "mediation_level_data.json"
 
 
 # =========================================================
@@ -123,6 +124,8 @@ def load_mediation_data(): return load_json(MEDIATION_DATA_FILE)
 def save_mediation_data(data): save_json(MEDIATION_DATA_FILE, data)
 def load_ticket_settings_draft(): return load_json(TICKET_SETTINGS_DRAFT_FILE)
 def save_ticket_settings_draft(data): save_json(TICKET_SETTINGS_DRAFT_FILE, data)
+def load_mediation_level_data(): return load_json(MEDIATION_LEVEL_DATA_FILE)
+def save_mediation_level_data(data): save_json(MEDIATION_LEVEL_DATA_FILE, data)
 
 
 def default_ticket_settings():
@@ -234,6 +237,63 @@ def build_ticket_settings_embed(panel: dict) -> discord.Embed:
             value=f"<#{panel_channel_id}> (message: {panel_message_id})",
             inline=False
         )
+    return embed
+
+
+# =========================================================
+# 仲介レベル設定 表示ヘルパー
+# =========================================================
+
+def default_mediation_levels():
+    return []
+
+
+def get_guild_mediation_levels(guild_id: int) -> list:
+    data = load_mediation_level_data()
+    gid = str(guild_id)
+    if gid not in data:
+        data[gid] = {"levels": default_mediation_levels()}
+        save_mediation_level_data(data)
+    return data[gid].get("levels", [])
+
+
+def set_guild_mediation_levels(guild_id: int, levels: list):
+    data = load_mediation_level_data()
+    gid = str(guild_id)
+    if gid not in data:
+        data[gid] = {}
+    data[gid]["levels"] = levels
+    save_mediation_level_data(data)
+
+
+def build_mediation_levels_embed(guild: discord.Guild) -> discord.Embed:
+    levels = get_guild_mediation_levels(guild.id)
+    embed = discord.Embed(
+        title="仲介レベル詳細",
+        description=(
+            f"サーバー名: {guild.id}\n"
+            f"下の設定ボタンから仲介レベルの設定をできます。"
+        ),
+        color=discord.Color.blurple()
+    )
+    if levels:
+        lines = []
+        for i, lv in enumerate(levels, start=1):
+            role = guild.get_role(lv.get("role_id")) if lv.get("role_id") else None
+            role_text = role.mention if role else "未設定"
+            lines.append(
+                f"{i}. {lv.get('name', '無題')}\n"
+                f"　{lv.get('emoji', '📝')}\n"
+                f"　{lv.get('description') or '説明なし'}\n"
+                f"スタッフロール\n"
+                f"{role_text}"
+            )
+        value = "\n".join(lines)
+        if len(value) > 1024:
+            value = value[:1021] + "..."
+        embed.add_field(name="**仲介レベルリスト**", value=value, inline=False)
+    else:
+        embed.add_field(name="**仲介レベルリスト**", value="まだ設定されていません。", inline=False)
     return embed
 
 
@@ -1151,7 +1211,6 @@ class TicketDetailModal(discord.ui.Modal):
 # =========================================================
 
 class TicketConfirmDeleteView(discord.ui.View):
-    """チケット削除の確認用（はい / いいえ）"""
     def __init__(self, cog, panel_id):
         super().__init__(timeout=60)
         self.cog = cog
@@ -1170,8 +1229,7 @@ class TicketConfirmDeleteView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction):
         if not self._is_staff(interaction):
             await interaction.response.send_message(
-                "削除にはチャンネル管理権限、またはスタッフロールが必要です。",
-                ephemeral=True
+                "削除にはチャンネル管理権限、またはスタッフロールが必要です。", ephemeral=True
             )
             return
         await interaction.response.send_message("5秒後にこのチケットを削除します…", ephemeral=True)
@@ -1266,8 +1324,7 @@ class TicketControlView(discord.ui.View):
         view = TicketConfirmDeleteView(self.cog, self.panel_id)
         await interaction.response.send_message(
             "本当にこのチケットを削除しますか？\n（「はい」を押すと 5 秒後に削除されます）",
-            view=view,
-            ephemeral=True,
+            view=view, ephemeral=True,
         )
 
     @discord.ui.button(label="対応中止", style=discord.ButtonStyle.secondary, emoji="⛔")
@@ -1330,7 +1387,7 @@ class TicketControlView(discord.ui.View):
 
 
 # =========================================================
-# TICKET SETTINGS (即時パネル表示 / _parent 衝突回避 / 下書き永続化)
+# TICKET SETTINGS (即時パネル表示 / 下書き永続化)
 # =========================================================
 
 class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
@@ -1347,8 +1404,7 @@ class TicketSettingsCategorySelect(discord.ui.ChannelSelect):
     async def callback(self, interaction: discord.Interaction):
         if self.settings_view is None:
             await interaction.response.send_message(
-                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。",
-                ephemeral=True
+                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。", ephemeral=True
             )
             return
         self.settings_view.settings["category_id"] = self.values[0].id
@@ -1371,8 +1427,7 @@ class TicketSettingsArchiveSelect(discord.ui.ChannelSelect):
     async def callback(self, interaction: discord.Interaction):
         if self.settings_view is None:
             await interaction.response.send_message(
-                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。",
-                ephemeral=True
+                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。", ephemeral=True
             )
             return
         self.settings_view.settings["archive_channel_id"] = self.values[0].id
@@ -1416,8 +1471,7 @@ class TicketSettingsRoleSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if self.settings_view is None:
             await interaction.response.send_message(
-                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。",
-                ephemeral=True
+                "設定画面の有効期限が切れました。もう一度 `/チケット` を実行してください。", ephemeral=True
             )
             return
         self.settings_view.settings["mention_role_id"] = int(self.values[0])
@@ -1429,8 +1483,7 @@ class TicketSettingsRoleSelect(discord.ui.Select):
             pass
         role = interaction.guild.get_role(int(self.values[0]))
         await interaction.response.send_message(
-            f"スタッフロールを {role.mention if role else self.values[0]} に設定しました。",
-            ephemeral=True
+            f"スタッフロールを {role.mention if role else self.values[0]} に設定しました。", ephemeral=True
         )
 
 
@@ -1596,8 +1649,7 @@ class TicketSettingsView(discord.ui.View):
         category = interaction.guild.get_channel(s["category_id"])
         if not isinstance(category, discord.CategoryChannel):
             await interaction.response.send_message(
-                "設定されたカテゴリーが見つかりません。選び直してください。",
-                ephemeral=True
+                "設定されたカテゴリーが見つかりません。選び直してください。", ephemeral=True
             )
             return
 
@@ -1894,8 +1946,7 @@ class StatusSelectView(discord.ui.View):
         if not target:
             await interaction.response.send_message(
                 "あなたはこのパネルのスタッフではありません。\n"
-                "管理者に `/対応状況スタッフ追加` を依頼してください。",
-                ephemeral=True
+                "管理者に `/対応状況スタッフ追加` を依頼してください。", ephemeral=True
             ); return
         status = select.values[0]
         emojis = {"対応不可": "🔴", "対応遅延": "🟠", "対応可能": "🟢"}
@@ -2588,6 +2639,135 @@ class PeriodicMessageRemoveView(discord.ui.View):
 
 
 # =========================================================
+# 仲介レベル設定（新規）
+# =========================================================
+
+class MediationLevelAddModal(discord.ui.Modal):
+    def __init__(self, cog):
+        super().__init__(title="仲介レベル追加")
+        self.cog = cog
+        self.name_input = discord.ui.TextInput(label="レベル名", placeholder="例: 例k－例k", max_length=100, required=True)
+        self.emoji_input = discord.ui.TextInput(label="絵文字", placeholder="例: 📝", max_length=10, required=False)
+        self.desc_input = discord.ui.TextInput(label="説明", placeholder="例: 説明", style=discord.TextStyle.paragraph, max_length=200, required=False)
+        self.add_item(self.name_input)
+        self.add_item(self.emoji_input)
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction):
+        view = MediationLevelRoleSelectView(
+            self.cog,
+            self.name_input.value.strip(),
+            self.emoji_input.value.strip() or "📝",
+            self.desc_input.value.strip() or "",
+        )
+        await interaction.response.send_message(
+            "スタッフロールを選択してください。",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class MediationLevelRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, parent: "MediationLevelRoleSelectView"):
+        super().__init__(
+            placeholder="🔍 スタッフロールを選択（検索できます）",
+            min_values=1, max_values=1,
+            custom_id="mediation_level_role_select",
+        )
+        self.parent = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        role = self.values[0]
+        levels = get_guild_mediation_levels(interaction.guild.id)
+        levels.append({
+            "name": self.parent.level_name,
+            "emoji": self.parent.emoji,
+            "description": self.parent.description,
+            "role_id": role.id,
+        })
+        set_guild_mediation_levels(interaction.guild.id, levels)
+        embed = build_mediation_levels_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=MediationLevelSettingView(self.parent.cog))
+
+
+class MediationLevelRoleSelectView(discord.ui.View):
+    def __init__(self, cog, level_name, emoji, description):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.level_name = level_name
+        self.emoji = emoji
+        self.description = description
+        self.add_item(MediationLevelRoleSelect(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+            return False
+        return True
+
+
+class MediationLevelRemoveSelect(discord.ui.Select):
+    def __init__(self, cog, options):
+        super().__init__(placeholder="削除する仲介レベルを選択", options=options, custom_id="mediation_level_remove_select")
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            idx = int(self.values[0])
+        except (ValueError, TypeError):
+            await interaction.response.edit_message(content="削除に失敗しました。", view=None)
+            return
+        levels = get_guild_mediation_levels(interaction.guild.id)
+        if 0 <= idx < len(levels):
+            removed = levels.pop(idx)
+            set_guild_mediation_levels(interaction.guild.id, levels)
+            embed = build_mediation_levels_embed(interaction.guild)
+            await interaction.response.edit_message(embed=embed, view=MediationLevelSettingView(self.cog))
+        else:
+            await interaction.response.edit_message(content="削除に失敗しました。", view=None)
+
+
+class MediationLevelRemoveView(discord.ui.View):
+    def __init__(self, cog, options):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.add_item(MediationLevelRemoveSelect(cog, options))
+
+
+class MediationLevelSettingView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=300)
+        self.cog = cog
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="レベル追加", style=discord.ButtonStyle.success, emoji="➕", custom_id="mediation_level_add")
+    async def add_level(self, interaction, button):
+        await interaction.response.send_modal(MediationLevelAddModal(self.cog))
+
+    @discord.ui.button(label="レベル削除", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="mediation_level_remove")
+    async def remove_level(self, interaction, button):
+        levels = get_guild_mediation_levels(interaction.guild.id)
+        if not levels:
+            await interaction.response.send_message("削除できる仲介レベルがありません。", ephemeral=True)
+            return
+        options = []
+        for i, lv in enumerate(levels[:25]):
+            label = lv.get("name", "無題")[:100]
+            options.append(discord.SelectOption(
+                label=f"{i+1}. {label}",
+                value=str(i),
+                emoji=lv.get("emoji", "📝")[:1] if lv.get("emoji") else None,
+            ))
+        view = MediationLevelRemoveView(self.cog, options)
+        await interaction.response.send_message("削除する仲介レベルを選択してください。", view=view, ephemeral=True)
+
+
+# =========================================================
 # MEDIATION
 # =========================================================
 
@@ -2813,23 +2993,84 @@ class MediationTradeTypeView(discord.ui.View):
 
     @discord.ui.button(label="💰売買", style=discord.ButtonStyle.success, custom_id="mediation_trade_buy")
     async def trade_buy(self, interaction, button):
-        modal = MediationTradeDetailModal(self.cog, self.panel_id, self.partner_id, "売買", self.reserve)
-        await interaction.response.send_modal(modal)
+        await self._open_trade(interaction, "売買")
 
     @discord.ui.button(label="🔄️交換", style=discord.ButtonStyle.primary, custom_id="mediation_trade_exchange")
     async def trade_exchange(self, interaction, button):
-        modal = MediationTradeDetailModal(self.cog, self.panel_id, self.partner_id, "交換", self.reserve)
+        await self._open_trade(interaction, "交換")
+
+    async def _open_trade(self, interaction: discord.Interaction, trade_type: str):
+        levels = get_guild_mediation_levels(interaction.guild.id)
+        if levels:
+            view = MediationLevelSelectView(
+                self.cog, self.panel_id, self.partner_id, trade_type, self.reserve, levels
+            )
+            await interaction.response.edit_message(
+                content=f"取引内容: **{trade_type}**\n仲介レベルを選択してください。",
+                view=view,
+            )
+        else:
+            modal = MediationTradeDetailModal(
+                self.cog, self.panel_id, self.partner_id, trade_type, self.reserve, None
+            )
+            await interaction.response.send_modal(modal)
+
+
+class MediationLevelSelect(discord.ui.Select):
+    def __init__(self, cog, panel_id, partner_id, trade_type, reserve, levels):
+        options = []
+        for i, lv in enumerate(levels[:25]):
+            options.append(discord.SelectOption(
+                label=lv.get("name", "無題")[:100],
+                value=str(i),
+                description=(lv.get("description") or "")[:100] or None,
+                emoji=lv.get("emoji", "📝")[:1] if lv.get("emoji") else None,
+            ))
+        super().__init__(placeholder="仲介レベルを選択してください", options=options, custom_id="mediation_level_select")
+        self.cog = cog
+        self.panel_id = panel_id
+        self.partner_id = partner_id
+        self.trade_type = trade_type
+        self.reserve = reserve
+        self.levels = levels
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            idx = int(self.values[0])
+        except (ValueError, TypeError):
+            await interaction.response.send_message("選択に失敗しました。", ephemeral=True)
+            return
+        if not (0 <= idx < len(self.levels)):
+            await interaction.response.send_message("選択に失敗しました。", ephemeral=True)
+            return
+        level = self.levels[idx]
+        modal = MediationTradeDetailModal(
+            self.cog, self.panel_id, self.partner_id, self.trade_type, self.reserve, level
+        )
         await interaction.response.send_modal(modal)
 
 
+class MediationLevelSelectView(discord.ui.View):
+    def __init__(self, cog, panel_id, partner_id, trade_type, reserve, levels):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.panel_id = panel_id
+        self.partner_id = partner_id
+        self.trade_type = trade_type
+        self.reserve = reserve
+        self.levels = levels
+        self.add_item(MediationLevelSelect(cog, panel_id, partner_id, trade_type, reserve, levels))
+
+
 class MediationTradeDetailModal(discord.ui.Modal):
-    def __init__(self, cog, panel_id, partner_id, trade_type, reserve):
+    def __init__(self, cog, panel_id, partner_id, trade_type, reserve, level=None):
         super().__init__(title=f"取引内容（{trade_type}）")
         self.cog = cog
         self.panel_id = panel_id
         self.partner_id = partner_id
         self.trade_type = trade_type
         self.reserve = reserve
+        self.level = level
         self.content_input = discord.ui.TextInput(label="取引内容", placeholder="取引の内容を入力してください", style=discord.TextStyle.paragraph, required=True, max_length=500)
         self.my_item_input = discord.ui.TextInput(label="自分の出す内容", required=True, max_length=300)
         self.partner_item_input = discord.ui.TextInput(label="相手を出す内容", required=True, max_length=300)
@@ -2840,13 +3081,14 @@ class MediationTradeDetailModal(discord.ui.Modal):
     async def on_submit(self, interaction):
         view = MediationMediatorChoiceView(
             self.cog, self.panel_id, self.partner_id, self.trade_type,
-            self.content_input.value, self.my_item_input.value, self.partner_item_input.value, self.reserve
+            self.content_input.value, self.my_item_input.value, self.partner_item_input.value,
+            self.reserve, self.level
         )
         await interaction.response.send_message("仲介人を指定しますか？", view=view, ephemeral=True)
 
 
 class MediationMediatorChoiceView(discord.ui.View):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, level=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
@@ -2856,6 +3098,7 @@ class MediationMediatorChoiceView(discord.ui.View):
         self.my_item = my_item
         self.partner_item = partner_item
         self.reserve = reserve
+        self.level = level
 
     @discord.ui.button(label="指定する", style=discord.ButtonStyle.success, custom_id="mediation_mediator_yes")
     async def yes(self, interaction, button):
@@ -2887,7 +3130,7 @@ class MediationMediatorChoiceView(discord.ui.View):
             await interaction.response.send_message("仲介できるメンバーが見つかりません。", ephemeral=True); return
         view = MediationMediatorSelectView(
             self.cog, self.panel_id, self.partner_id, self.trade_type,
-            self.content, self.my_item, self.partner_item, self.reserve, options[:25]
+            self.content, self.my_item, self.partner_item, self.reserve, options[:25], self.level
         )
         await interaction.response.edit_message(content="仲介人を選択してください。", view=view)
 
@@ -2908,18 +3151,19 @@ class MediationMediatorChoiceView(discord.ui.View):
         if self.reserve:
             modal = MediationReserveTimeModal(
                 self.cog, self.panel_id, self.partner_id, self.trade_type,
-                self.content, self.my_item, self.partner_item, mediator_id
+                self.content, self.my_item, self.partner_item, mediator_id, self.level
             )
             await interaction.response.send_modal(modal); return
         await self.cog.create_mediation_ticket(
             interaction.guild, interaction.user, self.partner_id, mediator_id,
-            self.trade_type, self.content, self.my_item, self.partner_item, category
+            self.trade_type, self.content, self.my_item, self.partner_item, category,
+            level=self.level
         )
         await interaction.response.send_message("仲介依頼チケットを作成しました。", ephemeral=True)
 
 
 class MediationMediatorSelect(discord.ui.Select):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level=None):
         super().__init__(placeholder="🔍 仲介人を選択（検索可能）", options=options, custom_id="mediation_mediator_select")
         self.cog = cog
         self.panel_id = panel_id
@@ -2929,18 +3173,19 @@ class MediationMediatorSelect(discord.ui.Select):
         self.my_item = my_item
         self.partner_item = partner_item
         self.reserve = reserve
+        self.level = level
 
     async def callback(self, interaction: discord.Interaction):
         mediator_id = int(self.values[0])
         view = MediationMediatorConfirmView(
             self.cog, self.panel_id, self.partner_id, self.trade_type,
-            self.content, self.my_item, self.partner_item, self.reserve, mediator_id
+            self.content, self.my_item, self.partner_item, self.reserve, mediator_id, self.level
         )
         await interaction.response.edit_message(content=f"仲介人: <@{mediator_id}>\nこの内容でチケットを作成しますか？", view=view)
 
 
 class MediationMediatorSelectView(discord.ui.View):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
@@ -2950,11 +3195,12 @@ class MediationMediatorSelectView(discord.ui.View):
         self.my_item = my_item
         self.partner_item = partner_item
         self.reserve = reserve
-        self.add_item(MediationMediatorSelect(cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options))
+        self.level = level
+        self.add_item(MediationMediatorSelect(cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, options, level))
 
 
 class MediationMediatorConfirmView(discord.ui.View):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, mediator_id):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, reserve, mediator_id, level=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.panel_id = panel_id
@@ -2965,6 +3211,7 @@ class MediationMediatorConfirmView(discord.ui.View):
         self.partner_item = partner_item
         self.reserve = reserve
         self.mediator_id = mediator_id
+        self.level = level
 
     @discord.ui.button(label="作成", style=discord.ButtonStyle.success, custom_id="mediation_confirm_create")
     async def create(self, interaction, button): await self._create(interaction)
@@ -2986,18 +3233,19 @@ class MediationMediatorConfirmView(discord.ui.View):
         if self.reserve:
             modal = MediationReserveTimeModal(
                 self.cog, self.panel_id, self.partner_id, self.trade_type,
-                self.content, self.my_item, self.partner_item, self.mediator_id
+                self.content, self.my_item, self.partner_item, self.mediator_id, self.level
             )
             await interaction.response.send_modal(modal); return
         await self.cog.create_mediation_ticket(
             interaction.guild, interaction.user, self.partner_id, self.mediator_id,
-            self.trade_type, self.content, self.my_item, self.partner_item, category
+            self.trade_type, self.content, self.my_item, self.partner_item, category,
+            level=self.level
         )
         await interaction.response.send_message("仲介依頼チケットを作成しました。", ephemeral=True)
 
 
 class MediationReserveTimeModal(discord.ui.Modal):
-    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, mediator_id):
+    def __init__(self, cog, panel_id, partner_id, trade_type, content, my_item, partner_item, mediator_id, level=None):
         super().__init__(title="予約時間の指定")
         self.cog = cog
         self.panel_id = panel_id
@@ -3007,6 +3255,7 @@ class MediationReserveTimeModal(discord.ui.Modal):
         self.my_item = my_item
         self.partner_item = partner_item
         self.mediator_id = mediator_id
+        self.level = level
         self.time_input = discord.ui.TextInput(label="予約時間（例: 2026-10-15 21:00）", placeholder="YYYY-MM-DD HH:MM (JST)", required=True, max_length=30)
         self.add_item(self.time_input)
 
@@ -3030,6 +3279,7 @@ class MediationReserveTimeModal(discord.ui.Modal):
             "mediator_id": self.mediator_id, "trade_type": self.trade_type,
             "content": self.content, "my_item": self.my_item, "partner_item": self.partner_item,
             "timestamp": timestamp, "channel_id": data[gid].get("request_category_id"),
+            "level": self.level,
         })
         save_mediation_data(data)
         self.cog.schedule_mediation_reservation(res_id, timestamp)
@@ -3038,7 +3288,7 @@ class MediationReserveTimeModal(discord.ui.Modal):
         )
 
 
-def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, trade_type, content, my_item, partner_item, embed_title, embed_description, status="進行中"):
+def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, trade_type, content, my_item, partner_item, embed_title, embed_description, status="進行中", level=None):
     embed = discord.Embed(
         title=embed_title or "🤝 仲介依頼",
         description=embed_description or "仲介依頼が作成されました。",
@@ -3051,6 +3301,14 @@ def build_mediation_ticket_embed(guild, requester_id, partner_id, mediator_id, t
     else:
         embed.add_field(name="仲介者", value="未指定（仲介ロールをメンション）", inline=True)
     embed.add_field(name="取引内容", value=trade_type, inline=True)
+    if level:
+        role = guild.get_role(level.get("role_id")) if level.get("role_id") else None
+        role_text = role.mention if role else "未設定"
+        embed.add_field(
+            name="仲介レベル",
+            value=f"{level.get('emoji', '📝')} **{level.get('name', '無題')}**\n{level.get('description') or '説明なし'}\nスタッフロール: {role_text}",
+            inline=False
+        )
     embed.add_field(name="内容", value=content or "なし", inline=False)
     embed.add_field(name="自分の出す内容", value=my_item or "なし", inline=False)
     embed.add_field(name="相手を出す内容", value=partner_item or "なし", inline=False)
@@ -3427,7 +3685,7 @@ class SlashCog(commands.Cog):
                     ids.add(m.id)
         return ids
 
-    async def create_mediation_ticket(self, guild, requester, partner_id, mediator_id, trade_type, content, my_item, partner_item, category):
+    async def create_mediation_ticket(self, guild, requester, partner_id, mediator_id, trade_type, content, my_item, partner_item, category, level=None):
         ticket_id = uuid.uuid4().hex[:10]
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -3448,6 +3706,11 @@ class SlashCog(commands.Cog):
                 role = guild.get_role(rid)
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        level_role = None
+        if level and level.get("role_id"):
+            level_role = guild.get_role(level["role_id"])
+            if level_role:
+                overwrites[level_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         try:
             ticket_channel = await guild.create_text_channel(
                 name=f"mediation-{requester.name}"[:100], category=category,
@@ -3460,7 +3723,8 @@ class SlashCog(commands.Cog):
         embed = build_mediation_ticket_embed(
             guild, requester.id, partner_id, mediator_id,
             trade_type, content, my_item, partner_item,
-            g.get("ticket_embed_title"), g.get("ticket_embed_description")
+            g.get("ticket_embed_title"), g.get("ticket_embed_description"),
+            level=level
         )
         mention_text = f"{requester.mention} <@{partner_id}>"
         if mediator_id:
@@ -3470,6 +3734,8 @@ class SlashCog(commands.Cog):
                 role = guild.get_role(rid)
                 if role:
                     mention_text += f" {role.mention}"
+        if level_role:
+            mention_text += f" {level_role.mention}"
         view = MediationTicketControlView(self, ticket_id)
         message = await ticket_channel.send(content=mention_text, embed=embed, view=view)
         self.mediation_tickets[ticket_id] = {
@@ -3479,6 +3745,7 @@ class SlashCog(commands.Cog):
             "mediator_id": mediator_id, "trade_type": trade_type,
             "content": content, "my_item": my_item, "partner_item": partner_item,
             "status": "進行中", "resumed": False, "supported_by": None,
+            "level": level,
         }
         return ticket_channel
 
@@ -3511,7 +3778,8 @@ class SlashCog(commands.Cog):
                 self.mediation_reservation_tasks.pop(res_id, None); return
             await self.create_mediation_ticket(
                 guild, requester, target["partner_id"], target.get("mediator_id"),
-                target["trade_type"], target["content"], target["my_item"], target["partner_item"], category
+                target["trade_type"], target["content"], target["my_item"], target["partner_item"], category,
+                level=target.get("level")
             )
             data = load_mediation_data()
             for g, gdata in data.items():
@@ -3540,6 +3808,8 @@ class SlashCog(commands.Cog):
             ts = r.get("timestamp", 0)
             partner = f"<@{r.get('partner_id')}>" if r.get("partner_id") else "未設定"
             mediator = f"<@{r.get('mediator_id')}>" if r.get("mediator_id") else "未指定"
+            level = r.get("level")
+            level_text = f"{level.get('emoji', '📝')} {level.get('name', '')}" if level else "未設定"
             embed.add_field(
                 name=f"予約ID: {r.get('id', '不明')}",
                 value=(
@@ -3547,6 +3817,7 @@ class SlashCog(commands.Cog):
                     f"取引相手: {partner}\n"
                     f"仲介者: {mediator}\n"
                     f"取引内容: {r.get('trade_type', '不明')}\n"
+                    f"仲介レベル: {level_text}\n"
                     f"予定時刻: <t:{ts}:F> (<t:{ts}:R>)\n"
                     f"内容: {r.get('content', '')[:100]}"
                 ),
@@ -4207,6 +4478,36 @@ class SlashCog(commands.Cog):
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # -----------------------------------------------------
+    # /仲介パネル詳細（新規：仲介レベル設定）
+    # -----------------------------------------------------
+
+    @app_commands.command(name="仲介パネル詳細", description="仲介レベルの設定を行います")
+    async def mediation_panel_detail(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+        embed = build_mediation_levels_embed(interaction.guild)
+        view = MediationLevelSettingView(self)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    # -----------------------------------------------------
+    # /仲介チケット詳細
+    # -----------------------------------------------------
+
+    @app_commands.command(name="仲介チケット詳細", description="仲介チケットの埋め込みタイトル・説明を設定します")
+    @app_commands.describe(title="埋め込みタイトル", description="埋め込み説明")
+    async def mediation_ticket_detail(self, interaction: discord.Interaction, title: str, description: str):
+        if not interaction.guild:
+            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+        data = load_mediation_data()
+        gid = str(interaction.guild.id)
+        if gid not in data:
+            data[gid] = {}
+        data[gid]["ticket_embed_title"] = title
+        data[gid]["ticket_embed_description"] = description
+        save_mediation_data(data)
+        await interaction.response.send_message("仲介チケットの埋め込みタイトル・説明を保存しました。", ephemeral=True)
+
     @app_commands.command(name="仲介依頼パネル作成", description="仲介依頼パネルを作成します")
     @app_commands.describe(title="パネルのタイトル", description="パネルの説明")
     async def mediation_request_panel(self, interaction: discord.Interaction, title: str, description: str):
@@ -4245,33 +4546,6 @@ class SlashCog(commands.Cog):
         embed = build_mediation_channel_embed(interaction.guild, data[gid])
         view = MediationChannelSettingView(self)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @app_commands.command(name="仲介チケット管理", description="仲介依頼のチケット作成カテゴリーを設定します")
-    async def mediation_ticket_manage(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        data = load_mediation_data()
-        gid = str(interaction.guild.id)
-        if gid not in data:
-            data[gid] = {}
-            save_mediation_data(data)
-        embed = build_mediation_channel_embed(interaction.guild, data[gid])
-        view = MediationChannelSettingView(self)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @app_commands.command(name="仲介チケット詳細", description="仲介チケットの埋め込みタイトル・説明を設定します")
-    @app_commands.describe(title="埋め込みタイトル", description="埋め込み説明")
-    async def mediation_ticket_detail(self, interaction: discord.Interaction, title: str, description: str):
-        if not interaction.guild:
-            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        data = load_mediation_data()
-        gid = str(interaction.guild.id)
-        if gid not in data:
-            data[gid] = {}
-        data[gid]["ticket_embed_title"] = title
-        data[gid]["ticket_embed_description"] = description
-        save_mediation_data(data)
-        await interaction.response.send_message("仲介チケットの埋め込みタイトル・説明を保存しました。", ephemeral=True)
 
     @app_commands.command(name="仲介人追加", description="現在の仲介チケットに仲介人を追加します")
     @app_commands.describe(user="追加する仲介人")
