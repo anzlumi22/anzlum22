@@ -78,6 +78,39 @@ def parse_color(value: str):
         return None
 
 
+def resolve_reaction_emoji(guild: discord.Guild, raw: str):
+    """
+    raw が ':name:' 形式ならギルド内のカスタム絵文字に解決して返す。
+    それ以外（Unicode絵文字など）はそのまま返す。
+    解決できなければ None を返す。
+    """
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # :name: 形式（コロンで囲まれた名前）
+    m = re.fullmatch(r":([A-Za-z0-9_~]+):", raw)
+    if m:
+        name = m.group(1)
+        emoji = discord.utils.get(guild.emojis, name=name)
+        return emoji  # 見つからなければ None
+    # <:name:id> / <a:name:id> / Unicode はそのまま
+    return raw
+
+
+def display_emoji(guild: discord.Guild, raw: str) -> str:
+    """表示用：:name: 形式なら実体の絵文字文字列に変換（見つからなければそのまま）"""
+    if not raw:
+        return ""
+    m = re.fullmatch(r":([A-Za-z0-9_~]+):", raw.strip())
+    if m:
+        em = discord.utils.get(guild.emojis, name=m.group(1))
+        if em:
+            return str(em)
+    return raw
+
+
 async def respond_error(interaction, message):
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
@@ -2388,7 +2421,8 @@ def build_auto_reaction_embed(guild, data):
         for cid, emojis in data.items():
             channel = guild.get_channel(int(cid))
             ch_name = channel.mention if channel else f"<#{cid}>"
-            lines.append(f"{ch_name} → {' '.join(emojis)}")
+            display = " ".join(display_emoji(guild, e) for e in emojis)
+            lines.append(f"{ch_name} → {display}")
         embed.add_field(name="リアクションするチャンネル", value="\n".join(lines)[:1024] if lines else "なし", inline=False)
     else:
         embed.add_field(name="リアクションするチャンネル", value="なし", inline=False)
@@ -2418,18 +2452,43 @@ class AutoReactionEmojiModal(discord.ui.Modal):
         super().__init__(title="絵文字を設定")
         self.cog = cog
         self.channel_id = channel_id
-        self.emoji_input = discord.ui.TextInput(label="絵文字（カンマ区切りで最大4つ）", placeholder="例: 👍,🎉,😊,🔥", required=True, max_length=200)
+        self.emoji_input = discord.ui.TextInput(
+            label="絵文字（カンマ区切りで最大4つ）",
+            placeholder="例: 👍,:akjdbahhab:,🎉",
+            required=True,
+            max_length=200,
+        )
         self.add_item(self.emoji_input)
 
     async def on_submit(self, interaction):
         emojis = [e.strip() for e in self.emoji_input.value.split(",") if e.strip()]
         if not emojis:
             await interaction.response.send_message("絵文字を1つ以上指定してください。", ephemeral=True); return
+        if len(emojis) > 4:
+            await interaction.response.send_message("絵文字は最大4つまでです。", ephemeral=True); return
+        # カスタム絵文字名の検証
+        invalid = []
+        normalized = []
+        for e in emojis:
+            m = re.fullmatch(r":([A-Za-z0-9_~]+):", e)
+            if m:
+                if discord.utils.get(interaction.guild.emojis, name=m.group(1)) is None:
+                    invalid.append(e)
+                else:
+                    normalized.append(e)
+            else:
+                normalized.append(e)
+        if invalid:
+            await interaction.response.send_message(
+                "以下のカスタム絵文字がこのサーバーに見つかりません:\n" + "\n".join(invalid),
+                ephemeral=True,
+            )
+            return
         data = load_auto_reaction_data()
         gid = str(interaction.guild.id)
         if gid not in data:
             data[gid] = {}
-        data[gid][str(self.channel_id)] = emojis
+        data[gid][str(self.channel_id)] = normalized
         save_auto_reaction_data(data)
         embed = build_auto_reaction_embed(interaction.guild, data[gid])
         view = AutoReactionSettingView(self.cog)
@@ -4683,8 +4742,11 @@ class SlashCog(commands.Cog):
         gid = str(message.guild.id)
         if gid in data_ar and str(message.channel.id) in data_ar[gid]:
             for emoji in data_ar[gid][str(message.channel.id)]:
+                resolved = resolve_reaction_emoji(message.guild, emoji)
+                if resolved is None:
+                    continue
                 try:
-                    await message.add_reaction(emoji)
+                    await message.add_reaction(resolved)
                 except discord.HTTPException:
                     pass
         fixed_data = load_fixed_message_data()
