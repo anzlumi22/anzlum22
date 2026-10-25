@@ -3573,37 +3573,63 @@ class MediationReviewStartView(discord.ui.View):
         self.review_button.custom_id = f"med_review_{ticket_id}"
         self.end_button.custom_id = f"med_end_{ticket_id}"
 
+    def _build_review_options(self, guild: discord.Guild, ticket: dict):
+        options = []
+        seen = set()
+
+        def add_member(m):
+            if not m or m.bot or m.id in seen:
+                return
+            seen.add(m.id)
+            options.append(discord.SelectOption(label=m.display_name[:100], value=str(m.id)))
+
+        # 1) 実際に対応した人（supported_by）
+        if ticket.get("supported_by"):
+            add_member(guild.get_member(ticket["supported_by"]))
+
+        # 2) 明示的に指定された仲介者（mediator_id）
+        if ticket.get("mediator_id"):
+            add_member(guild.get_member(ticket["mediator_id"]))
+
+        # 3) 追加された人（extra_mediators）
+        for uid in ticket.get("extra_mediators", []):
+            add_member(guild.get_member(uid))
+
+        # 4) チケット作成時に選んだレベルに紐づくスタッフロール保持者
+        level = ticket.get("level")
+        if isinstance(level, dict):
+            for rid in level_role_ids(level):
+                role = guild.get_role(rid)
+                if not role:
+                    continue
+                for m in role.members:
+                    add_member(m)
+
+        # 5) フォールバック: 上記いずれも無い場合のみ /仲介設定 の設定を使う
+        if not options:
+            data = load_mediation_data()
+            g = data.get(str(guild.id), {})
+            for rid in g.get("role_ids", []):
+                role = guild.get_role(rid)
+                if not role:
+                    continue
+                for m in role.members:
+                    add_member(m)
+            for uid in g.get("member_ids", []):
+                add_member(guild.get_member(uid))
+
+        return options
+
     @discord.ui.button(label="評価する", style=discord.ButtonStyle.primary, emoji="⭐", custom_id="med_review_default")
     async def review_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
-            await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True); return
-        data = load_mediation_data()
-        gid = str(interaction.guild.id)
-        g = data.get(gid, {})
-        role_ids = g.get("role_ids", [])
-        member_ids = g.get("member_ids", [])
-        options = []
-        seen = set()
-        for rid in role_ids:
-            role = interaction.guild.get_role(rid)
-            if not role:
-                continue
-            for m in role.members:
-                if m.id in seen:
-                    continue
-                seen.add(m.id)
-                options.append(discord.SelectOption(label=m.display_name[:100], value=str(m.id)))
-        for uid in member_ids:
-            if uid in seen:
-                continue
-            m = interaction.guild.get_member(uid)
-            if not m:
-                continue
-            seen.add(m.id)
-            options.append(discord.SelectOption(label=m.display_name[:100], value=str(m.id)))
+            await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
+            return
+        options = self._build_review_options(interaction.guild, ticket)
         if not options:
-            await interaction.response.send_message("評価できる仲介者が見つかりません。", ephemeral=True); return
+            await interaction.response.send_message("評価できる仲介者が見つかりません。", ephemeral=True)
+            return
         view = MediationReviewMediatorSelectView(self.cog, self.ticket_id, options[:25])
         await interaction.response.send_message("仲介者を選んでください。", view=view, ephemeral=True)
 
@@ -3611,10 +3637,12 @@ class MediationReviewStartView(discord.ui.View):
     async def end_button(self, interaction, button):
         ticket = self.cog.mediation_tickets.get(self.ticket_id)
         if not ticket:
-            await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True); return
+            await interaction.response.send_message("チケット情報が見つかりません。", ephemeral=True)
+            return
         supported_by = ticket.get("supported_by")
         if not supported_by or interaction.user.id != supported_by:
-            await interaction.response.send_message("仲介対応した人のみ実行できます。", ephemeral=True); return
+            await interaction.response.send_message("仲介対応した人のみ実行できます。", ephemeral=True)
+            return
         await interaction.response.send_message("5秒以内に削除します。", ephemeral=True)
 
         async def delete_later():
