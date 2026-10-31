@@ -14,7 +14,7 @@ from utils import is_authorized
 # =========================
 
 # 環境変数 "TOKEN" を読み込んで変数に代入する
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
     raise RuntimeError("環境変数 TOKEN が設定されていません")
