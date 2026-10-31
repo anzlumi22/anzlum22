@@ -10,26 +10,10 @@ from utils import is_authorized
 
 
 # =========================
-# Render用Webサーバー
-# =========================
-
-app = Flask(__name__)
-
-
-@app.route("/")
-def home():
-    return "Bot is online!"
-
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-
-# =========================
 # Discord Bot
 # =========================
 
+# 環境変数 "TOKEN" を読み込んで変数に代入する
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
@@ -42,7 +26,6 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         # ===== グローバルチェックを登録 =====
-        # これ1つで全スラッシュコマンドに利用権限チェックが適用される
         self.tree.interaction_check = is_authorized
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -75,6 +58,19 @@ bot = MyBot(
 
 
 # =========================
+# Webサーバー（RenderやBotkeepのヘルスチェック用）
+# =========================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8080)
+
+
+# =========================
 # ステータス更新（視聴中）
 # =========================
 
@@ -101,7 +97,6 @@ async def on_ready():
     print(f"Bot ID: {bot.user.id}")
     print(f"Servers: {len(bot.guilds)}")
 
-    # ステータス更新ループを開始（多重起動防止）
     if not update_status.is_running():
         update_status.start()
 
