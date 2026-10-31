@@ -1,10 +1,15 @@
-import discord
-from discord.ext import commands, tasks
-from discord import app_commands
 import os
 import traceback
 from flask import Flask
 from threading import Thread
+from dotenv import load_dotenv
+
+# .envファイルを読み込む
+load_dotenv()
+
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
 
 from utils import is_authorized
 
@@ -13,11 +18,11 @@ from utils import is_authorized
 # Discord Bot
 # =========================
 
-# 環境変数 "TOKEN" を読み込んで変数に代入する
+# 環境変数 "DISCORD_TOKEN" を読み込んで変数に代入する
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("環境変数 TOKEN が設定されていません")
+    raise RuntimeError("環境変数 DISCORD_TOKEN が設定されていません")
 
 intents = discord.Intents.all()
 
@@ -58,7 +63,7 @@ bot = MyBot(
 
 
 # =========================
-# Webサーバー（RenderやBotkeepのヘルスチェック用）
+# Webサーバー（ヘルスチェック用）
 # =========================
 app = Flask(__name__)
 
